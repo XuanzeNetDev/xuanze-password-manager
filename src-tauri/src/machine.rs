@@ -53,13 +53,13 @@ fn roaming_appdata() -> Option<PathBuf> {
 /// 绑定材料存放目录与 vault 同父级，但文件名不同。
 fn binding_path() -> Option<PathBuf> {
     let base = roaming_appdata()?;
-    Some(base.join("cn.wordpeak.xuanze.vault").join("machine.bind"))
+    Some(base.join("cn.xuanze.vault").join("machine.bind"))
 }
 
 /// 库登记表：本机自己创建过的库的 ID。
 fn registry_path() -> Option<PathBuf> {
     let base = roaming_appdata()?;
-    Some(base.join("cn.wordpeak.xuanze.vault").join("registry"))
+    Some(base.join("cn.xuanze.vault").join("registry"))
 }
 
 /// 解锁票据：把主密钥用 DPAPI 封存，下次进入直接取用，跳过 Argon2。
@@ -72,7 +72,7 @@ fn registry_path() -> Option<PathBuf> {
 /// 拷到别的账户/机器解不开；换机器也就等于没有票据，退回完整 KDF。
 fn ticket_path() -> Option<PathBuf> {
     let base = roaming_appdata()?;
-    Some(base.join("cn.wordpeak.xuanze.vault").join("unlock.ticket"))
+    Some(base.join("cn.xuanze.vault").join("unlock.ticket"))
 }
 
 
@@ -253,7 +253,7 @@ fn volume_serial() -> Option<String> {
 
 /// 取（必要时创建）本机随机串。
 ///
-/// 存在 `%APPDATA%\cn.wordpeak.xuanze.vault\machine.bind`，
+/// 存在 `%APPDATA%\cn.xuanze.vault\machine.bind`，
 /// 用 DPAPI 以当前用户身份加密。拷到别的机器/账号解不开。
 fn local_secret() -> Result<Vec<u8>, String> {
     let path = binding_path().ok_or("拿不到应用数据目录")?;

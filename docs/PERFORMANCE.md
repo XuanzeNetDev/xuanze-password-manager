@@ -159,7 +159,7 @@ SIMD 优化过的；手写循环在短 needle 上完全打不过。回退。
 ## 7. 复现
 
 ```bash
-cargo test -p xz-core          # 50 项，应全绿
+cargo test -p xz-core          # 60 项，应全绿
 cargo run --release -p xz-bench
 ```
 

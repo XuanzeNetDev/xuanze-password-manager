@@ -7,7 +7,7 @@
 - [x] vault 格式 v1 + 完整规范文档
 - [x] Argon2id + AES-256-GCM + HKDF 子密钥隔离
 - [x] 内存索引、流式 Top-K 搜索、热度榜
-- [x] CLI（init / add / list / find / show / rm / passwd / export）
+- [x] CLI（init / add / list / find / show / rm / passwd）
 - [x] 性能基准与优化报告
 - [x] Tauri 桌面壳：会话状态机、自动锁定、剪贴板定时清除
 - [x] 三语界面（简中 / English / 日本語）

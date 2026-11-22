@@ -169,6 +169,14 @@ pub fn is_known_vault(vault_id: &str) -> bool {
     known_vaults().iter().any(|x| x == vault_id)
 }
 
+/// 本机是否已经建过库（登记表非空）。
+///
+/// 用来区分「第一次使用」和「绑定材料丢了」——这两种情况都表现为
+/// `machine.bind` 不存在，但处理方式完全相反。
+fn has_registered_vault() -> bool {
+    !known_vaults().is_empty()
+}
+
 /// 读登记表。读不到就当空表（首次使用）。
 ///
 /// 内容用 DPAPI 封存：手工往文件里塞一个 ID 是无效的，
@@ -294,7 +302,23 @@ fn local_secret() -> Result<Vec<u8>, String> {
         return dpapi_unprotect(&sealed);
     }
 
-    // 第一次：生成 32 字节随机串并封存
+    // 文件不在，但登记表里已经有库 —— 说明原来的绑定材料丢了，
+    // 不是「第一次使用」。
+    //
+    // 这时候生成一个新的随机串只会骗人：算出来的主密钥必然不对，
+    // 用户会看到「密码错误」，然后一遍遍重试一个其实正确的密码。
+    // 必须直接说清楚发生了什么。
+    if has_registered_vault() {
+        return Err(
+            "本机的绑定材料（machine.bind）不见了，无法打开已有的库。\n\n\
+             可能的原因为：清理了 %APPDATA%、重装系统、或换过硬件。\n\
+             绑定材料是解密库的必要条件，丢失后无法重建 —— 这是本产品\
+             「数据只能在本机使用」这一设计的直接后果。"
+                .to_owned(),
+        );
+    }
+
+    // 第一次使用：生成 32 字节随机串并封存。
     // 复用核心库的随机源（BCryptGenRandom，失败就 abort）
     let secret: [u8; 32] = xz_core::kdf::random_bytes::<32>();
     let sealed = dpapi_protect(&secret)?;

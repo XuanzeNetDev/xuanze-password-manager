@@ -29,7 +29,6 @@ fn main() {
         "show" => cmd_show(rest),
         "rm" => cmd_rm(rest),
         "find" => cmd_find(rest),
-        "export" => cmd_export(rest),
         "passwd" => cmd_passwd(rest),
         other => {
             eprintln!("未知命令：{other}");
@@ -57,7 +56,6 @@ fn print_help() {
   xzc show   <vault> --password <pw> <id> [--reveal]
   xzc rm     <vault> --password <pw> <id>
   xzc passwd <vault> --password <旧密码> --new-password <新密码>
-  xzc export <vault> --password <pw> [--out <文件>]
 
 约定：
   --password - 表示从环境变量 XZ_PASSWORD 读取，避免密码进 shell 历史。
@@ -280,38 +278,6 @@ fn cmd_passwd(args: &[String]) -> Result<(), xz_core::Error> {
     Ok(())
 }
 
-fn cmd_export(args: &[String]) -> Result<(), xz_core::Error> {
-    let (pos, flags) = parse_flags(args);
-    let path = pos
-        .first()
-        .ok_or(xz_core::Error::Invalid("缺少 vault 路径"))?;
-    let pw =
-        password(&flags, "password").map_err(|_| xz_core::Error::Invalid("缺少 --password"))?;
-    let v = Vault::open(Path::new(path), &pw)?;
-    let mut out = String::from("name,kind,username,secret,url,tags\n");
-    for item in v.index().all_sorted() {
-        if let Some(e) = v.get(&item.id) {
-            out.push_str(&format!(
-                "{},{},{},{},{},{}\n",
-                csv_escape(&e.name),
-                kind_name(e.kind),
-                csv_escape(&e.username),
-                csv_escape(&e.secret),
-                csv_escape(&e.url),
-                csv_escape(&e.tags.join("|"))
-            ));
-        }
-    }
-    match flag(&flags, "out") {
-        Some(p) => {
-            std::fs::write(&p, out)?;
-            println!("已导出到 {p}（明文，请立刻处理掉）");
-        }
-        None => print!("{out}"),
-    }
-    Ok(())
-}
-
 fn kind_name(k: EntryKind) -> &'static str {
     match k {
         EntryKind::Login => "登录",
@@ -330,14 +296,6 @@ fn truncate(s: &str, n: usize) -> String {
         let mut out: String = chars[..n.saturating_sub(1)].iter().collect();
         out.push('…');
         out
-    }
-}
-
-fn csv_escape(s: &str) -> String {
-    if s.contains(',') || s.contains('"') || s.contains('\n') {
-        format!("\"{}\"", s.replace('"', "\"\""))
-    } else {
-        s.to_owned()
     }
 }
 

@@ -109,12 +109,19 @@ function renderLock(msg = "", info = false): void {
       await enter();
     } catch (e) {
       msgEl.classList.remove("info");
-      // 区分「密码错」和「这库不归本机管」——
-      // 后者不是用户输错，提示成密码错会让人一直重试。
+      // 三类错误要分开说，因为用户的下一步动作完全不同：
+      //   1. 密码错 → 重输
+      //   2. 这库不归本机管 → 换个文件
+      //   3. 本机绑定材料丢了 → 不能再试，库救不回来了
+      // 全提示成「密码不对」会让第 2、3 种情况的人一直重试一个正确密码。
       const raw = errText(e);
-      msgEl.textContent = raw.includes("不是本机创建")
-        ? "这个库不是在本机创建的，无法打开"
-        : "密码不对";
+      if (raw.includes("绑定材料")) {
+        msgEl.textContent = "本机的绑定材料丢失，这个库已无法打开";
+      } else if (raw.includes("不是本机创建")) {
+        msgEl.textContent = "这个库不是在本机创建的，无法打开";
+      } else {
+        msgEl.textContent = "密码不对";
+      }
       busy = false;
       pw.select();
     }
@@ -1320,8 +1327,11 @@ function onKey(e: KeyboardEvent): void {
 // ─────────────────────────── 启动 ───────────────────────────
 
 async function boot(): Promise<void> {
-  // 预览用：?theme=light / ?theme=dark 直接指定主题，方便对照两套配色
-  const forcedTheme = new URLSearchParams(location.search).get("theme");
+  // 预览用：?theme=light / ?theme=dark 直接指定主题，方便对照两套配色。
+  // 只在开发构建里生效 —— 发布版不该有能改变行为的 URL 参数入口。
+  const forcedTheme = import.meta.env.DEV
+    ? new URLSearchParams(location.search).get("theme")
+    : null;
   if (forcedTheme === "light" || forcedTheme === "dark") {
     applyTheme(forcedTheme);
   } else {
@@ -1375,7 +1385,12 @@ async function boot(): Promise<void> {
   try {
     // 浏览器预览：?screen=lock 直接看锁屏，?screen=app 看主界面。
     // 调界面时不用来回解锁，两条视图都能单独打开。
-    const forced = new URLSearchParams(location.search).get("screen");
+    //
+    // 只在开发构建里认这个参数。发布版忽略它 —— 一个能决定「显示哪个界面」的
+    // URL 入口不该出现在成品里，哪怕后端 IPC 另有拦截。
+    const forced = import.meta.env.DEV
+      ? new URLSearchParams(location.search).get("screen")
+      : null;
     if (forced === "lock") {
       renderLock();
     } else if (forced === "register") {

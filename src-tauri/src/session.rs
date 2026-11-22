@@ -133,6 +133,17 @@ impl Session {
     /// 锁定：擦除密钥、清空明文。
     pub fn lock(&mut self) {
         if let Session::Unlocked(u) = self {
+            // 锁之前先把脏数据落盘。
+            //
+            // 为什么需要这一步：`record_use` 只把 dirty 置 true 不落盘（那是对的，
+            // 用一次热键就写一次盘太重），但 `Vault::lock()` 会清掉 dirty。
+            // 于是「解锁期间用过几次 → 自动锁定」这条路径下，使用计数全丢，
+            // 热度榜越用越不准，而 Ctrl+Shift+1..9 正是靠热度排序。
+            //
+            // 落盘失败不阻断锁定：安全优先，宁可丢计数也不能让库停在解锁态。
+            if u.vault.is_dirty() && u.vault.path().is_some() {
+                let _ = u.vault.save();
+            }
             u.vault.lock();
         }
         *self = Session::Locked;

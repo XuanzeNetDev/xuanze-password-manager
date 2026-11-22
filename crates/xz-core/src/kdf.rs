@@ -25,8 +25,14 @@ pub struct KdfParams {
 }
 
 impl Default for KdfParams {
+    /// 与产品默认一致：`paranoid`（256 MiB × 4 轮）。
+    ///
+    /// 这里曾经返回 `balanced`，而命令层的 `kdf_from(None)` 返回 `paranoid` ——
+    /// 两个「默认」不一样。目前没有代码依赖 `Default`，所以行为看不出来，
+    /// 但只要有谁给某个字段加上 `#[serde(default)]` 就会悄悄降一档。
+    /// 宁可只有一种默认。
     fn default() -> Self {
-        Self::balanced()
+        Self::paranoid()
     }
 }
 

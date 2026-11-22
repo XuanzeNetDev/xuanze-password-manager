@@ -21,6 +21,9 @@ tauri-plugin-dialog = "2"
 serde = { workspace = true }
 serde_json = { workspace = true }
 xz-core = { workspace = true }
+# 宿主侧也要擦：DPAPI 解出来的主密钥/机器串在这里落地，
+# 不能只在核心库里有 SecretBytes 而壳层到处留裸 Vec。
+zeroize = { workspace = true }
 zip = { version = "2", default-features = false, features = ["deflate", "deflate-flate2"] }
 
 [target.'cfg(windows)'.dependencies]

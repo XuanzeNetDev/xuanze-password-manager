@@ -62,3 +62,13 @@ jobs:
 
       - name: Rust 检查
         run: cargo clippy -p xuanze-vault --all-targets -- -D warnings
+
+      # 桌面壳里真正会被执行到的测试（xlsx 读写、导出导入逐字段往返、
+      # 稀疏单元格与共享字符串解析）都挂在 lib 的 #[cfg(test)] 上。
+      # 只跑 clippy 的话，这些测试在 CI 里一次都不会被执行 ——
+      # 「导入会丢自定义字段」这类缺陷就是这样漏过去的。
+      #
+      # --lib 是必须的：不要拉起 GUI/二进制目标，否则 runner 上会去连
+      # 交互式桌面而失败。
+      - name: 桌面壳单元测试
+        run: cargo test -p xuanze-vault --lib

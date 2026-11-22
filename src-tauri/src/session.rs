@@ -17,6 +17,23 @@ use std::time::Instant;
 /// 两次活跃刷新之间的最小间隔。前端节流是 6 秒，这里取 4 秒留余量。
 const MIN_TOUCH_GAP: std::time::Duration = std::time::Duration::from_secs(4);
 
+/// 默认的闲置锁定时长。用户可以在设置里改（1..=120 分钟）。
+const DEFAULT_AUTOLOCK_MINUTES: u32 = 5;
+
+/// 从用户设置里读闲置锁定时长。
+///
+/// 读不到就用默认值。`None` 表示不自动锁 —— 当前界面上不提供这个选项，
+/// 保留它是因为 `Unlocked::auto_lock` 的类型本来就是 `Option`。
+fn auto_lock_setting() -> Option<std::time::Duration> {
+    let minutes = crate::machine::autolock_minutes();
+    let minutes = if minutes == 0 {
+        DEFAULT_AUTOLOCK_MINUTES
+    } else {
+        minutes
+    };
+    Some(std::time::Duration::from_secs(u64::from(minutes) * 60))
+}
+
 /// 单个解锁会话的绝对寿命：到点必须重新输密码。
 ///
 /// 自动锁定管的是「闲置」，这条管的是「一直在用」——不设上限的话，
@@ -77,7 +94,7 @@ impl Session {
             vault,
             last_activity: Instant::now(),
             started_at: Instant::now(),
-            auto_lock: Some(std::time::Duration::from_secs(300)),
+            auto_lock: auto_lock_setting(),
         }));
         Ok(())
     }
@@ -90,7 +107,7 @@ impl Session {
             vault,
             last_activity: Instant::now(),
             started_at: Instant::now(),
-            auto_lock: Some(std::time::Duration::from_secs(300)),
+            auto_lock: auto_lock_setting(),
         }));
     }
 
@@ -109,7 +126,7 @@ impl Session {
             vault,
             last_activity: Instant::now(),
             started_at: Instant::now(),
-            auto_lock: Some(std::time::Duration::from_secs(300)),
+            auto_lock: auto_lock_setting(),
         }));
         Ok(())
     }
@@ -125,7 +142,7 @@ impl Session {
             vault,
             last_activity: Instant::now(),
             started_at: Instant::now(),
-            auto_lock: Some(std::time::Duration::from_secs(300)),
+            auto_lock: auto_lock_setting(),
         }));
         Ok(())
     }
@@ -187,8 +204,15 @@ impl Session {
         false
     }
 
-    /// 检查是否需要自动锁定。返回是否刚刚锁了。
-    pub fn check_autolock(&mut self) -> bool {
+    /// 检查是否需要自动锁定。
+    ///
+    /// 返回 `(是否刚锁定, 锁定前落盘的错误)`。
+    ///
+    /// 为什么要带第二项：自动锁定是**没人看着**的时候触发的，如果那一次
+    /// 落盘失败（磁盘满、权限被改），改动就随锁定一起消失了。而调用方
+    /// （前端定时轮询）原本只收到一个 bool，什么都不用报 —— 于是用户
+    /// 以为「改完就存上了」，其实没有。这条错误必须交上去，让界面说清楚。
+    pub fn check_autolock(&mut self) -> (bool, Option<String>) {
         let should_lock = match self {
             Session::Unlocked(u) => {
                 // 闲置超时，或者会话已达绝对上限
@@ -198,16 +222,28 @@ impl Session {
             }
             Session::Locked => false,
         };
-        if should_lock {
-            // 自动锁定由定时器触发，没有人在等返回值。落盘失败只能记日志 ——
-            // 但至少不再是彻底静默：debug 构建下会打出来。
-            if let Err(e) = self.lock() {
-                #[cfg(debug_assertions)]
-                eprintln!("[autolock] {e}");
-                let _ = &e;
-            }
+        if !should_lock {
+            return (false, None);
         }
-        should_lock
+        // 落盘失败时仍然锁定（安全优先），但把错误交回调用方。
+        (true, self.lock().err())
+    }
+
+    /// 改闲置锁定时长，立即生效。
+    ///
+    /// `minutes == 0` 表示取消自动锁定 —— 界面上暂时不提供这个选项，
+    /// 但内部保留，方便将来做成「长期办公机不锁」。
+    pub fn set_auto_lock(&mut self, minutes: u32) {
+        if let Session::Unlocked(u) = self {
+            u.auto_lock = if minutes == 0 {
+                None
+            } else {
+                Some(std::time::Duration::from_secs(u64::from(minutes) * 60))
+            };
+            // 改了锁定时长之后，当前这一轮闲置计时从「现在」重新算，
+            // 否则刚设成 30 分钟就会被上一轮的 5 分钟倒计时提前锁掉。
+            u.last_activity = Instant::now();
+        }
     }
 
     /// 距离自动锁定还有多少秒。未解锁或不自动锁时返回 `None`。

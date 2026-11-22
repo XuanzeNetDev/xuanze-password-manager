@@ -70,6 +70,13 @@ export const mockApi = {
   lock: async () => {},
   save: async () => {},
   defaultVaultPath: async () => "C:\\Users\\demo\\AppData\\Roaming\\cn.xuanze.vault\\vault.xzvlt",
+  // 浏览器预览里没有真实库文件：报「已有库」，让预览直接进登录页，
+  // 而不是把每次刷新都当成第一次使用、跳到注册页。
+  vaultExists: async () => ({
+    known: true,
+    file_exists: true,
+    path: "C:\\Users\\demo\\AppData\\Roaming\\cn.xuanze.vault\\vault.xzvlt",
+  }),
   rekey: async () => {},
 
   hot: async (limit: number) => {
@@ -147,11 +154,13 @@ export const mockApi = {
   },
 
   exportXlsx: async () => store.length,
-  importXlsx: async () => ({ imported: 0, skipped: 0 }),
+  importXlsx: async () => ({ imported: 0, skipped: 0, errors: [] }),
   autoUnlockStatus: async () => false,
   enableAutoUnlock: async () => {},
   disableAutoUnlock: async () => {},
 
   touch: async () => {},
-  autolockCheck: async () => false,
+  autolockCheck: async () => ({ locked: false, save_error: null }),
+  autolockMinutes: async () => 5,
+  setAutolock: async (m: number) => m,
 };

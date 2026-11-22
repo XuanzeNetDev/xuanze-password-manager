@@ -30,6 +30,8 @@ const api = (
 
 const state = {
   unlocked: false,
+  /** 当前库文件的路径。由 `boot()` 问后端要，**不存 localStorage**。 */
+  vaultPath: "",
   /** 当前专辑：all / hot / tag:xxx / untagged */
   album: "all",
   /** 全量条目（用于算专辑计数与过滤）。 */
@@ -66,7 +68,21 @@ function toast(msg: string, sub?: string): void {
   }, sub ? 3000 : 1900);
 }
 
-const lastPath = () => localStorage.getItem("xz.lastVault") ?? "";
+/**
+ * 当前库文件的路径。
+ *
+ * 前端**不用**它做任何决定 —— 打开、保存、改密码、写回位置全部由后端
+ * 用固定位置完成，IPC 上已经没有「路径」这个参数了（见 `api.ts`）。
+ *
+ * 它只剩一个用途：判断后端有没有正常给出库位置。为空表示初始化出错，
+ * 此时界面显示「打不开」，而不是跳注册页 —— 跳注册会建新库、覆盖掉
+ * 用户原有的库。
+ *
+ * 以前这个值存在 `localStorage["xz.lastVault"]` 里，而且**同时兼任
+ * 「本机有没有库」的判据**：那条记录一清（清 WebView 缓存、换内核版本、
+ * 系统清理工具），前端就认为这是第一次使用，把老用户带进注册页 ——
+ * 加密数据就这么没了，全程静默。
+ */
 
 function countdown(s: number | null): string {
   if (s === null || s <= 0) return "";
@@ -76,13 +92,56 @@ function countdown(s: number | null): string {
 
 // ─────────────────────────── 锁屏 ───────────────────────────
 
+/**
+ * 后端没给出库位置时的兜底界面。
+ *
+ * 这里**绝不能**跳注册页。注册会走 `vault_create` + `vault_save`，
+ * 落到默认位置、把用户原有的库覆盖掉 —— 而真实情况可能只是后端
+ * 初始化慢了一步。宁可显示一句「打不开」，也不要在用户不知情的时候
+ * 销毁他的数据。
+ */
+function renderUnavailable(): void {
+  const retry = h("button", { class: "btn primary lock-go", type: "button" }, "重试");
+  retry.addEventListener("click", () => location.reload());
+
+  replaceChildren(root, [
+    h(
+      "div",
+      { class: "lock" },
+      h("div", { class: "grain" }),
+      h(
+        "div",
+        { class: "lock-inner" },
+        h("img", { class: "lock-logo", src: logoUrl, alt: "" }),
+        h("h1", { class: "lock-name" }, "璇泽密钥库"),
+        h("div", { class: "lock-msg" }, "读不到密钥库的位置，暂时打不开。"),
+        retry,
+        h(
+          "div",
+          { class: "lock-foot" },
+          h(
+            "span",
+            { class: "lock-note" },
+            "你的数据没有被改动。如果反复出现，请确认 %APPDATA%\\cn.xuanze.vault 目录可访问。",
+          ),
+        ),
+      ),
+    ),
+    toasts,
+  ]);
+}
+
 function renderLock(msg = "", info = false): void {
   // 「库」这个概念对用户是隐藏的，界面上只分两种状态：
   //   第一次用 → 设置一个密码（注册）
   //   以后每次 → 输入这个密码（登录）
-  const path = lastPath();
+  //
+  // 走哪条路由 `boot()` 问过后端决定（登记表 + 文件是否存在）。
+  // 这里拿不到路径只可能是后端初始化失败 —— 那种时候**绝不能退到注册页**，
+  // 见 renderUnavailable 的说明。
+  const path = state.vaultPath;
   if (!path) {
-    renderRegister();
+    renderUnavailable();
     return;
   }
 
@@ -106,20 +165,23 @@ function renderLock(msg = "", info = false): void {
     replaceChildren(msgEl, [h("span", { class: "spin" })]);
     msgEl.classList.add("info");
     try {
-      await api.open(path, pw.value);
+      await api.open(pw.value);
       await enter();
     } catch (e) {
       msgEl.classList.remove("info");
-      // 三类错误要分开说，因为用户的下一步动作完全不同：
+      // 四类错误要分开说，因为用户的下一步动作完全不同：
       //   1. 密码错 → 重输
       //   2. 这库不归本机管 → 换个文件
       //   3. 本机绑定材料丢了 → 不能再试，库救不回来了
-      // 全提示成「密码不对」会让第 2、3 种情况的人一直重试一个正确密码。
+      //   4. 库文件不在了 → 去找文件 / 从 Excel 恢复
+      // 全提示成「密码不对」会让后面三种人一直重试一个正确的密码。
       const raw = errText(e);
       if (raw.includes("绑定材料")) {
         msgEl.textContent = "本机的绑定材料丢失，这个库已无法打开";
       } else if (raw.includes("不是本机创建")) {
         msgEl.textContent = "这个库不是在本机创建的，无法打开";
+      } else if (raw.includes("读不了文件")) {
+        msgEl.textContent = "库文件不在了（被移动或删除）。可以从导出的 Excel 恢复。";
       } else {
         msgEl.textContent = "密码不对";
       }
@@ -225,9 +287,9 @@ function renderRegister(): void {
       window.clearInterval(timer);
       stepEl.textContent = steps[steps.length - 1] ?? "";
 
-      const path = await api.defaultVaultPath();
-      await api.save(path);
-      localStorage.setItem("xz.lastVault", path);
+      // 库文件位置由后端决定（固定默认位置），前端只负责记下来显示用。
+      state.vaultPath = await api.defaultVaultPath();
+      await api.save();
 
       await enter();
     } catch (e) {
@@ -264,7 +326,7 @@ function renderRegister(): void {
 
         msgEl,
         go,
-        h("div", { class: "lock-foot" }, h("span", { class: "lock-note" }, "密码不会上传，忘了就找不回")),
+        h("div", { class: "lock-foot" }, h("span", { class: "lock-note" }, "密码不会上传，只存在这台电脑上。忘记密码只能靠导出的 Excel 恢复数据，建议尽早导出一次。")),
       ),
     ),
     toasts,
@@ -462,9 +524,8 @@ function renderSide(): HTMLElement {
     h(
       "div",
       { class: "side-foot" },
-      // 不提供导入/导出：
-      //   导入 —— 新版浏览器的密码库（v20）拿不到；
-      //   导出 —— 明文落盘等于把加密白做了，数据只能留在软件里。
+      // 只在左栏放「设置」。导入 / 导出、改密码、免密码模式都在设置面板里 ——
+      // 它们不是高频动作，摆在主界面上只会让常用路径更挤。
       mk("gear", "设置", () => void openSettings()),
       h("div", { class: "grow" }),
       h("span", { class: "cd" }, countdown(state.seconds)),
@@ -506,7 +567,9 @@ function t_kind(k: number): string {
     login: "登录",
     api_key: "密钥",
     note: "笔记",
-    card: "卡片",
+    // 与导出表格的「类型」列保持一致（那边写的是「银行卡」）：
+    // 同一个概念在两处叫不同名字，用户对照表格时会以为不是一回事。
+    card: "银行卡",
     credential: "凭据",
   };
   return m[kindKey(k)] ?? "密钥";
@@ -664,7 +727,18 @@ function renderTable(): HTMLElement[] {
 
 function renderCell(e: EntryView, c: Col): HTMLElement {
   if (c.key === "name") {
-    return h("div", { class: "td strong", title: e.name }, e.name);
+    // 过期的条目在名称后面挂一个小标记。
+    //
+    // `expires_at` 这个字段从数据模型到导出表格都有，但界面一直没接 ——
+    // 用户能设置（见编辑器）却看不到哪些已经过期，这个字段就等于不存在。
+    const nowSec = Math.floor(Date.now() / 1000);
+    const expired = e.expires_at > 0 && e.expires_at <= nowSec;
+    return h(
+      "div",
+      { class: "td strong", title: e.name },
+      e.name,
+      expired ? h("span", { class: "tag warn" }, "已过期") : null,
+    );
   }
   if (c.key === "kind") {
     // e.kind 已经是字符串（login / api_key / note / card / credential）
@@ -672,7 +746,7 @@ function renderCell(e: EntryView, c: Col): HTMLElement {
       login: "登录",
       api_key: "密钥",
       note: "笔记",
-      card: "卡片",
+      card: "银行卡",
       credential: "凭据",
     };
     return h("div", { class: "td dim" }, map[e.kind] ?? "密钥");
@@ -751,6 +825,8 @@ function renderCell(e: EntryView, c: Col): HTMLElement {
     );
   }
   if (c.key.startsWith("f:")) {
+    // 自定义字段不摊进表格（见 `columnsOf` 的说明），这个分支用不到。
+    // 留着是为了 `Col.key` 的形态稳定，真要吃自定义列时不用再改一遍结构。
     const name = c.key.slice(2);
     const f = e.fields.find((x) => x.name === name);
     if (!f) return h("div", { class: "td dim" }, "—");
@@ -763,10 +839,9 @@ function renderCell(e: EntryView, c: Col): HTMLElement {
 // ─────────────────────────── 动作 ───────────────────────────
 
 async function autosave(): Promise<void> {
-  const p = lastPath();
-  if (!p) return;
+  if (!state.unlocked) return;
   try {
-    await api.save(p);
+    await api.save();
     const st = await api.status();
     state.dirty = st.dirty;
   } catch (e) {
@@ -819,6 +894,7 @@ async function doLock(): Promise<void> {
     await api.lock();
     state.unlocked = false;
     state.items = [];
+    state.allItems = [];
     state.full.clear();
     state.shown.clear();
     state.secret.clear();
@@ -865,6 +941,23 @@ function row(label: string, el: HTMLElement): HTMLElement {
   return h("div", { class: "fld" }, h("label", { class: "flbl" }, label), el);
 }
 
+/** Unix 秒 → `<input type="date">` 的 `YYYY-MM-DD`（本地时区）。0 → 空串。 */
+function toDateInput(ts: number): string {
+  if (!ts) return "";
+  const d = new Date(ts * 1000);
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
+/** `YYYY-MM-DD` → 当天 00:00 的 Unix 秒（本地时区）。解析不了返回 0。 */
+function fromDateInput(s: string): number {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s.trim());
+  if (!m) return 0;
+  const [, y, mo, da] = m;
+  const t = new Date(Number(y), Number(mo) - 1, Number(da), 0, 0, 0, 0).getTime();
+  return Number.isFinite(t) ? Math.floor(t / 1000) : 0;
+}
+
 async function openEditor(existing: EntryView | null, id?: string): Promise<void> {
   const e = existing ?? (id ? await fullOf(id) : null);
 
@@ -874,6 +967,14 @@ async function openEditor(existing: EntryView | null, id?: string): Promise<void
   const secret = h("input", { class: "in mono", type: "password", placeholder: e ? "留空不改" : "" });
   const notes = h("textarea", { class: "in" }) as HTMLTextAreaElement;
   if (e?.notes) notes.value = e.notes;
+
+  // 过期时间（可选）。留空 = 不过期。
+  //
+  // 这个字段一直存在于数据模型、索引和导出表格里，但界面上既不能设也不能看 ——
+  // 「API key 轮换提醒」那半句承诺因此一直是空的。现在至少能设、能在列表里
+  // 看到哪些已经过期。
+  const expires = h("input", { class: "in", type: "date" }) as HTMLInputElement;
+  if (e?.expires_at) expires.value = toDateInput(e.expires_at);
 
   const kind = h("select", { class: "in" }) as HTMLSelectElement;
   for (const k of ["login", "api_key", "note", "card", "credential"]) {
@@ -967,7 +1068,14 @@ async function openEditor(existing: EntryView | null, id?: string): Promise<void
     fields.forEach((f, i) => {
       const a = h("input", { type: "text", placeholder: "字段名", value: f.name });
       a.addEventListener("input", () => { const c = fields[i]; if (c) c.name = a.value; });
-      const b = h("input", { type: "text", placeholder: "值", value: f.value });
+      // 敏感字段的值本来就不会发给前端，那一格天生是空的 ——
+      // 提示「留空不改」，后端也按这个语义处理（空值 = 保持原值），
+      // 否则「打开编辑器、什么都不改、点保存」会把值擦掉。
+      const b = h("input", {
+        type: f.secret ? "password" : "text",
+        placeholder: f.secret ? "留空不改" : "值",
+        value: f.value,
+      });
       b.addEventListener("input", () => { const c = fields[i]; if (c) c.value = b.value; });
       const cb = h("input", { type: "checkbox" }) as HTMLInputElement;
       cb.checked = f.secret;
@@ -1002,7 +1110,7 @@ async function openEditor(existing: EntryView | null, id?: string): Promise<void
         notes: notes.value,
         tags,
         fields: fields.map((f) => ({ name: f.name, value: f.value, secret: f.secret })),
-        expires_at: e?.expires_at ?? 0,
+        expires_at: fromDateInput(expires.value),
       });
       state.full.delete(savedId);
       await autosave();
@@ -1023,6 +1131,7 @@ async function openEditor(existing: EntryView | null, id?: string): Promise<void
       h("div", { class: "two" }, row("类型", kind), row("账号", user)),
       row("密码 / 密钥", secret),
       row("网址", url),
+      row("过期时间（可选）", expires),
       h("div", { class: "fld" }, h("label", { class: "flbl" }, "专辑"), tagBox, suggest),
       h("div", { class: "fld" }, h("label", { class: "flbl" }, "自定义字段"), fBox, addF),
       row("备注", notes),
@@ -1080,16 +1189,12 @@ function openRekey(): void {
       again.select();
       return;
     }
-    const p = lastPath();
-    if (!p) {
-      msg.textContent = "找不到库文件";
-      return;
-    }
     busy = true;
     go.disabled = true;
     go.textContent = "处理中…";
     try {
-      await api.rekey(oldPw.value, newPw.value, p);
+      // 写回位置由后端决定；这里要跑两轮 Argon2，慢是正常的。
+      await api.rekey(oldPw.value, newPw.value);
       closeModal();
       toast("密码已修改", "下次请用新密码登录");
     } catch (e) {
@@ -1108,7 +1213,7 @@ function openRekey(): void {
       newPw,
       again,
       msg,
-      h("div", { class: "shint" }, "密码不会上传；忘记密码数据无法恢复。"),
+      h("div", { class: "shint" }, "密码不会上传。改完之后旧密码立即失效；忘记密码时，数据只能靠导出的 Excel 恢复。"),
     ],
     [cancel, go],
   );
@@ -1123,13 +1228,11 @@ function openRekey(): void {
  */
 async function tryAutoUnlock(): Promise<boolean> {
   if (!("__TAURI_INTERNALS__" in window)) return false;
-  const path = lastPath();
-  if (!path) return false;
   try {
     if (!(await api.autoUnlockStatus())) return false;
     // 密码传空串：后端看到免密码模式开启会优先用封存的密钥，
     // 只有那一步失败（比如换过密码）才需要真密码。
-    await api.open(path, "");
+    await api.open("");
     return true;
   } catch {
     return false;
@@ -1144,6 +1247,13 @@ async function openSettings(): Promise<void> {
     autoUnlockOn = await api.autoUnlockStatus();
   } catch {
     autoUnlockOn = false;
+  }
+  // 自动锁定时长同理：后端存盘、后端生效，前端只负责显示与设置。
+  let autolockMin = 5;
+  try {
+    autolockMin = await api.autolockMinutes();
+  } catch {
+    autolockMin = 5;
   }
 
   const seg = (opts: [string, string][], cur: string, on: (v: string) => void) => {
@@ -1180,6 +1290,25 @@ async function openSettings(): Promise<void> {
         applyTheme(v as Theme);
       })),
       setRow(
+        "闲置自动锁定",
+        "在这段时间里没有任何操作就自动锁库。调短是在共用环境里最有效的一步。",
+        seg(
+          [["1", "1 分钟"], ["5", "5 分钟"], ["15", "15 分钟"], ["30", "30 分钟"]],
+          String(autolockMin),
+          (v) => {
+            void (async () => {
+              try {
+                const applied = await api.setAutolock(Number(v));
+                autolockMin = applied;
+                toast("已更新", `闲置 ${applied} 分钟后自动锁定`);
+              } catch (e) {
+                toast(`设置失败：${errText(e)}`);
+              }
+            })();
+          },
+        ),
+      ),
+      setRow(
         "主密码",
         "修改后旧密码立即失效，数据用新密码重新封装。",
         rekeyBtn,
@@ -1187,8 +1316,8 @@ async function openSettings(): Promise<void> {
       setRow(
         "免密码模式",
         autoUnlockOn
-          ? "已开启：启动、关闭都不再要求输入密码。库文件本身仍绑着主密码和本机，拷到别处打不开。"
-          : "开启后，本机启动和关闭都不再要求输入密码。文件仍绑着主密码和本机，拷到别处打不开。",
+          ? "已开启：启动、关闭不再要求输入密码 —— 本机任何程序也因此能不输密码进库。库文件仍绑着主密码和本机，拷到别处打不开。"
+          : "开启后，本机启动和关闭都不再要求输入密码（同机其他程序也一样）。库文件仍绑着主密码和本机，拷到别处打不开。",
         (() => {
           const b = h(
             "button",
@@ -1205,9 +1334,7 @@ async function openSettings(): Promise<void> {
 
       setRow(
         "导入 / 导出",
-        autoUnlockOn
-          ? "Excel 表格，按专辑分表。导出的是明文，请妥善保管文件。"
-          : "Excel 表格，按专辑分表。导出的是明文，两边都需要再输一次主密码。",
+        "Excel 表格，按专辑分表。导出的是明文；导入导出两边都要再输一次主密码（免密码模式也一样）。",
         h("div", { class: "row2" },
           (() => {
             const b = h("button", { class: "btn", type: "button" }, "导入");
@@ -1257,16 +1384,19 @@ async function openSettings(): Promise<void> {
 }
 
 /**
- * 从 Excel 导入。格式与导出严格对称。
+ * 从 Excel 导入。格式与导出对称。
  *
- * 表头必须是导出的那一套（名称/类型/账号/密码/网址/专辑/备注/更新时间/自定义字段），
- * 每张工作表对应一个专辑。表头对不上就跳过整张表 —— 不去猜列序，
+ * 表头按**名字**对位（列顺序可以变、可以多几列手写批注，只要「名称」列在），
+ * 每张工作表对应一个专辑。认不出表头的表整张跳过 —— 不去猜列序，
  * 猜错会把密码塞进用户名。
  *
- * 未开启免密码模式时要求再输一次主密码；开启后不再询问。
+ * 这条路径的定位是**灾备恢复**：换机器 / 重装系统之后靠它把数据搬回来。
+ * 自定义字段、创建/过期时间、使用次数都会还原。
+ *
+ * 免密码模式也要输主密码 —— 导入是往库里写数据，免检等于让本机任何程序
+ * 都能往你的密钥库里塞条目。
  */
 async function openImport(): Promise<void> {
-  const noPw = await api.autoUnlockStatus().catch(() => false);
   const pw = h("input", {
     class: "in",
     type: "password",
@@ -1282,7 +1412,7 @@ async function openImport(): Promise<void> {
   go.addEventListener("click", async () => {
     if (busy) return;
     msg.textContent = "";
-    if (!noPw && !pw.value) {
+    if (!pw.value) {
       msg.textContent = "请输入主密码";
       pw.focus();
       return;
@@ -1313,6 +1443,9 @@ async function openImport(): Promise<void> {
       renderMain();
       if (r.imported === 0) {
         toast("没有导入任何条目", `跳过 ${r.skipped} 条（重复或格式不符）`);
+      } else if (r.errors.length > 0) {
+        // 少了几条要说清为什么 —— 导入是恢复路径，静默少一条最要命
+        toast(`已导入 ${r.imported} 条，${r.errors.length} 条失败`, r.errors[0]);
       } else {
         toast(`已导入 ${r.imported} 条`, r.skipped > 0 ? `跳过 ${r.skipped} 条` : "");
       }
@@ -1328,32 +1461,30 @@ async function openImport(): Promise<void> {
     if (e.key === "Enter") void go.click();
   });
 
-  const rows = [
-    h(
-      "div",
-      { class: "shint" },
-      "文件格式必须与本软件导出的表格一致：表头固定，每张工作表对应一个专辑。",
-    ),
-  ];
-  if (noPw) {
-    rows.push(
-      h("div", { class: "shint" }, "免密码模式已开启，本次不再要求输入密码。"),
-    );
-  } else {
-    rows.push(pw);
-  }
-  rows.push(
-    msg,
-    h(
-      "div",
-      { class: "shint" },
-      "名称和账号都相同的条目会被跳过，同一个文件可以重复导入。",
-    ),
+  openModal(
+    "导入 Excel",
+    [
+      h(
+        "div",
+        { class: "shint" },
+        "读取本软件导出的表格：表头按列名对位，每张工作表对应一个专辑。",
+      ),
+      h(
+        "div",
+        { class: "shint" },
+        "自定义字段、创建时间、过期时间、使用次数都会一并还原。",
+      ),
+      pw,
+      msg,
+      h(
+        "div",
+        { class: "shint" },
+        "名称和账号都相同的条目会被跳过，同一个文件可以重复导入。",
+      ),
+    ],
+    [cancel, go],
   );
-
-  openModal("导入 Excel", rows, [cancel, go]);
-  if (noPw) go.focus();
-  else pw.focus();
+  pw.focus();
 }
 
 
@@ -1362,6 +1493,11 @@ async function openImport(): Promise<void> {
  *
  * 两种操作都要主密码 —— 开启是「授权这台机器此后免密」，
  * 关闭是「撤销这个授权」，都不该在库单纯开着的时候随便生效。
+ *
+ * 开启前多一道勾选确认。为什么要有：这个模式的实际后果是
+ * 「本机同一个 Windows 账户下的任何程序，都能不输密码进库、并导出明文」。
+ * 它省下来的是每次启动的那一次输入，代价是把「知道主密码」这个门槛
+ * 从本机上撤掉。这种交换必须由用户看清后主动点，而不是点一下开关就生效。
  */
 function openAutoUnlock(enable: boolean): void {
   const pw = h("input", {
@@ -1380,16 +1516,38 @@ function openAutoUnlock(enable: boolean): void {
     enable ? "开启" : "关闭",
   );
 
+  // 开启时的二次确认勾选。没勾之前按钮是禁用的。
+  const ack = h("input", { type: "checkbox" }) as HTMLInputElement;
+  const ackRow = h(
+    "label",
+    { class: "ack" },
+    ack,
+    h(
+      "span",
+      {},
+      "我明白：开启后，这台电脑上任何程序都能不输密码进入这个库，也能把它导出成明文。",
+    ),
+  );
+
+  const syncGo = () => {
+    go.disabled = busy || (enable && !ack.checked);
+  };
+  ack.addEventListener("change", syncGo);
+
   const run = async () => {
     if (busy) return;
     msg.textContent = "";
+    if (enable && !ack.checked) {
+      msg.textContent = "请先勾选上面的确认项";
+      return;
+    }
     if (!pw.value) {
       msg.textContent = "请输入主密码";
       pw.focus();
       return;
     }
     busy = true;
-    go.disabled = true;
+    syncGo();
     try {
       if (enable) await api.enableAutoUnlock(pw.value);
       else await api.disableAutoUnlock(pw.value);
@@ -1401,7 +1559,7 @@ function openAutoUnlock(enable: boolean): void {
     } catch (e) {
       msg.textContent = errText(e);
       busy = false;
-      go.disabled = false;
+      syncGo();
     }
   };
 
@@ -1410,7 +1568,7 @@ function openAutoUnlock(enable: boolean): void {
     if (e.key === "Enter") void run();
   });
 
-  const rows = [
+  const rows: HTMLElement[] = [
     h(
       "div",
       { class: "shint" },
@@ -1426,28 +1584,37 @@ function openAutoUnlock(enable: boolean): void {
         { class: "shint" },
         "库文件本身仍用完整主密码加本机绑定加密：拷到别的电脑、发给别人，一样打不开。",
       ),
+      h(
+        "div",
+        { class: "shint" },
+        "导入导出仍然要求输入主密码 —— 那一步是把全部明文拿出来，不随这个开关放行。",
+      ),
+      ackRow,
     );
   }
   rows.push(pw, msg);
 
   openModal(enable ? "开启免密码模式" : "关闭免密码模式", rows, [cancel, go]);
+  syncGo();
   pw.focus();
 }
 
 
 /**
- * 导出为 Excel。**必须再输一次主密码**。
+ * 导出为 Excel。**必须再输一次主密码**，免密码模式也不例外。
  *
  * 这是唯一一个能把全部密钥一次性倒出来的入口，导出的是明文。
  * 只判断「已解锁」就放行，等于给同机任何进程开一扇门 ——
  * 重输密码把这一步拉回「只有知道主密码的人能做」。
  *
+ * 免密码模式以前会跳过这一步（后端也跟着跳过），结果是：点一下设置，
+ * 此后本机任何能 invoke 的程序都能让软件把整库导成明文 Excel。
+ * 现在两种模式一视同仁：省的是每次启动的输入，不是「一次性拿出全部明文」。
+ *
  * 流程：输密码 → 选位置（系统另存为）→ 写盘。
  * 三张表起步：「全部」+ 每个专辑一张。
  */
 async function openExport(): Promise<void> {
-  // 免密码模式下不再问密码：这个模式的语义就是「本机已授权」。
-  const noPw = await api.autoUnlockStatus().catch(() => false);
   const pw = h("input", {
     class: "in",
     type: "password",
@@ -1463,7 +1630,7 @@ async function openExport(): Promise<void> {
   go.addEventListener("click", async () => {
     if (busy) return;
     msg.textContent = "";
-    if (!noPw && !pw.value) {
+    if (!pw.value) {
       msg.textContent = "请输入主密码";
       pw.focus();
       return;
@@ -1497,38 +1664,34 @@ async function openExport(): Promise<void> {
     }
   });
 
-  for (const el of [pw]) {
-    el.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") void go.click();
-    });
-  }
+  pw.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") void go.click();
+  });
 
-  const rows = [
-    h(
-      "div",
-      { class: "shint" },
-      "导出的文件是明文，任何拿到它的人都能看到全部账号密码。",
-    ),
-  ];
-  if (noPw) {
-    rows.push(
-      h("div", { class: "shint" }, "免密码模式已开启，本次不再要求输入密码。"),
-    );
-  } else {
-    rows.push(pw);
-  }
-  rows.push(
-    msg,
-    h(
-      "div",
-      { class: "shint" },
-      "按专辑分表：每个专辑一张工作表，另有一张包含全部条目。",
-    ),
+  openModal(
+    "导出 Excel",
+    [
+      h(
+        "div",
+        { class: "shint" },
+        "导出的文件是明文，任何拿到它的人都能看到全部账号密码。",
+      ),
+      h(
+        "div",
+        { class: "shint" },
+        "这份文件也是换机器 / 重装系统时的恢复来源：新机器上新建库之后，用「导入」把它读回来，自定义字段和时间都会还原。",
+      ),
+      pw,
+      msg,
+      h(
+        "div",
+        { class: "shint" },
+        "按专辑分表：每个专辑一张工作表，另有一张包含全部条目。",
+      ),
+    ],
+    [cancel, go],
   );
-
-  openModal("导出 Excel", rows, [cancel, go]);
-  if (noPw) go.focus();
-  else pw.focus();
+  pw.focus();
 }
 
 /** 关于我们：产品信息 + 开源声明。 */
@@ -1719,15 +1882,24 @@ async function boot(): Promise<void> {
   setInterval(async () => {
     if (!state.unlocked) return;
     try {
-      if (await api.autolockCheck()) {
+      const r = await api.autolockCheck();
+      if (r.locked) {
         state.unlocked = false;
         // 和 doLock 保持一致：条目列表里是名称/账号/网址明文，一起清掉
         state.items = [];
+        state.allItems = [];
         state.selected = null;
         state.full.clear();
         state.shown.clear();
         state.secret.clear();
-        swapScreen(() => renderLock("闲置超时，已自动锁定", true));
+        // 锁定前那次落盘如果失败，必须让用户看见 —— 否则他会以为
+        // 「改完就自动锁了 = 存上了」，实际那批改动已经随锁定消失。
+        if (r.save_error) {
+          swapScreen(() => renderLock("闲置超时，已自动锁定", true));
+          toast("锁定前没能保存改动", r.save_error ?? "");
+        } else {
+          swapScreen(() => renderLock("闲置超时，已自动锁定", true));
+        }
         return;
       }
       const st = await api.status();
@@ -1748,12 +1920,22 @@ async function boot(): Promise<void> {
     const forced = import.meta.env.DEV
       ? new URLSearchParams(location.search).get("screen")
       : null;
+    // 「本机有没有库」必须问后端：登记表里有没有记录、默认路径上有没有文件。
+    //
+    // 这里以前读 `localStorage["xz.lastVault"]` —— 那条记录一清，老用户就
+    // 被当成新用户，进注册页、在默认路径上覆盖掉原来的库。判据必须客观。
+    const presence = await api.vaultExists();
+    state.vaultPath = presence.path;
+
     if (forced === "lock") {
       renderLock();
     } else if (forced === "register") {
       renderRegister();
     } else if (!("__TAURI_INTERNALS__" in window) && forced !== "app") {
       await enter();
+    } else if (!presence.known && !presence.file_exists) {
+      // 真正第一次用：登记表空、文件也没有
+      renderRegister();
     } else {
       const st = await api.status();
       if (st.unlocked) {

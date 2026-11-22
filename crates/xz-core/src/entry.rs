@@ -132,8 +132,22 @@ pub struct Entry {
 
 impl Entry {
     /// 校验并规范化。导入外部数据时必过的关口。
+    ///
+    /// ## 为什么每一段都要有上界
+    ///
+    /// 这些字段全都能从 IPC 进来（`entry_save` 的参数就是前端随手填的 JSON），
+    /// 也都能从导入的 xlsx 进来（别人给的文件）。只限 `name` 和 `secret`
+    /// 是不够的：一条 200 MB 的 `notes` 会在每次保存时被整库序列化一次，
+    /// 而保存是同步全量重写 —— 一个巨大的备注就能把整个库变成不可用，
+    /// 甚至先把内存吃光。上界不是洁癖，是可用性边界。
     pub fn validate(&self) -> crate::Result<()> {
         use crate::error::Error;
+
+        /// 单个自定义字段值的上限。
+        const MAX_FIELD_VALUE: usize = 64 << 10; // 64 KiB
+        /// 单个条目的备注上限。留得很宽 —— 私钥正文、恢复码都放得下。
+        const MAX_NOTES: usize = 1 << 20; // 1 MiB
+
         if self.name.trim().is_empty() {
             return Err(Error::Invalid("条目名称不能为空"));
         }
@@ -145,6 +159,29 @@ impl Entry {
         }
         if self.secret.len() > 1 << 20 {
             return Err(Error::Invalid("主秘密超过 1 MiB"));
+        }
+        if self.url.len() > 8 << 10 {
+            return Err(Error::Invalid("网址超过 8 KiB"));
+        }
+        if self.notes.len() > MAX_NOTES {
+            return Err(Error::Invalid("备注超过 1 MiB"));
+        }
+        if self.tags.len() > 128 {
+            return Err(Error::Invalid("标签超过 128 个"));
+        }
+        if self.tags.iter().any(|t| t.len() > 128) {
+            return Err(Error::Invalid("单个标签超过 128 字节"));
+        }
+        if self.fields.len() > 512 {
+            return Err(Error::Invalid("自定义字段超过 512 个"));
+        }
+        for f in &self.fields {
+            if f.name.trim().is_empty() || f.name.len() > 128 {
+                return Err(Error::Invalid("自定义字段名称为空或超过 128 字节"));
+            }
+            if f.value.len() > MAX_FIELD_VALUE {
+                return Err(Error::Invalid("自定义字段值超过 64 KiB"));
+            }
         }
         Ok(())
     }
@@ -418,6 +455,33 @@ mod tests {
         let mut e = sample();
         e.name = "  ".into();
         assert!(e.validate().is_err());
+    }
+
+    /// 上界必须真的挡住 —— 这些字段都能从 IPC 和导入文件进来。
+    #[test]
+    fn validate_bounds_every_big_field() {
+        let e = sample();
+        assert!(e.validate().is_ok());
+
+        let mut e2 = sample();
+        e2.notes = "x".repeat((1 << 20) + 1);
+        assert!(e2.validate().is_err(), "备注 1 MiB 上限");
+
+        let mut e3 = sample();
+        e3.fields = vec![Field::plain("f", "y".repeat((64 << 10) + 1))];
+        assert!(e3.validate().is_err(), "字段值 64 KiB 上限");
+
+        let mut e4 = sample();
+        e4.fields = vec![Field::plain("", "v")];
+        assert!(e4.validate().is_err(), "字段名不能为空");
+
+        let mut e5 = sample();
+        e5.tags = vec!["t".repeat(129)];
+        assert!(e5.validate().is_err(), "单个标签 128 字节上限");
+
+        let mut e6 = sample();
+        e6.url = "u".repeat((8 << 10) + 1);
+        assert!(e6.validate().is_err(), "网址 8 KiB 上限");
     }
 
     #[test]

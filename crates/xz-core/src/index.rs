@@ -135,10 +135,19 @@ impl Index {
     /// 热度榜：按 `use_count` 降序、`last_used_at` 降序，取前 `k` 条。
     ///
     /// 这是「快捷复制」的核心：用户按 Ctrl+Shift+1..9 就是取这里的前 9 条。
+    ///
+    /// `k == 0` 必须在这里挡住：下面的 `k - 1` 在 `usize` 上会下溢成
+    /// `usize::MAX`，`select_nth_unstable_by` 拿到越界下标直接 panic，
+    /// 而这个库的 `panic` 策略是 `abort` —— 一条 `invoke('list_hot',{limit:0})`
+    /// 就能让整个进程消失。早先只在 `search` 里挡了 0，这里漏了。
     #[must_use]
     pub fn hot(&self, k: usize) -> Vec<&IndexItem> {
+        if k == 0 || self.items.is_empty() {
+            return Vec::new();
+        }
         let mut v: Vec<&IndexItem> = self.items.iter().map(|c| &c.item).collect();
         // 部分排序比全排快；k 一般 ≤ 20，n 可能上万。
+        // 走到这里 k >= 1，`k - 1` 不会下溢。
         if k < v.len() {
             v.select_nth_unstable_by(k - 1, |a, b| {
                 b.use_count
@@ -262,6 +271,18 @@ mod tests {
         assert_eq!(idx.hot(10).len(), 1);
         let empty = Index::new();
         assert!(empty.hot(10).is_empty());
+    }
+
+    /// `hot(0)` 曾经会 `k - 1` 下溢成 `usize::MAX` 然后 panic。
+    /// 这条 IPC 对同机任何进程可达，release 下 panic = abort = 整个进程死。
+    #[test]
+    fn hot_zero_is_empty_not_panic() {
+        let idx = Index::build(&[e("a", "A", 3), e("b", "B", 1)]);
+        assert!(idx.hot(0).is_empty());
+        assert!(Index::new().hot(0).is_empty());
+        // 边界另一侧：k 恰好等于长度、大于长度
+        assert_eq!(idx.hot(2).len(), 2);
+        assert_eq!(idx.hot(usize::MAX).len(), 2);
     }
 
     #[test]

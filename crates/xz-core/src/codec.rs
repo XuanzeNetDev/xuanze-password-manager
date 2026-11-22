@@ -35,8 +35,11 @@ const VERIFY_PLAINTEXT: &[u8] = b"xzvlt/v1/verify-ok";
 
 /// 校验块的固定长度：nonce + 明文 + tag。
 ///
-/// 文档里曾经写 28 / 48 / 20 字节，都不对 —— 明文就是 18 字节的
-/// `xzvlt/v1/verify-ok`，所以整个块正好 46 字节。
+/// 明文的字面量是 `xzvlt/v1/verify-ok`（18 字节），所以整块恒为
+/// 12 + 18 + 16 = 46 字节。
+///
+/// 这里的 `v1` 是**用途标签的命名空间**，不是格式版本号 —— 格式版本看头里的
+/// `version` 字段（当前 2）。两者各自独立演进，见 `crypto.rs` 的 `KeyPurpose`。
 pub const VERIFY_BLOCK_LEN: usize = crypto::NONCE_LEN + VERIFY_PLAINTEXT.len() + crypto::TAG_LEN;
 
 /// 解析出来的文件头。

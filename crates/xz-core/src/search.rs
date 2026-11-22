@@ -163,10 +163,17 @@ pub fn search<'a>(index: &'a Index, query: &str, limit: usize) -> Vec<Hit<'a>> {
 
     let items: Vec<&IndexItem> = index.indexed_items().map(|(_, it)| it).collect();
     buf.into_iter()
-        .map(|s| Hit {
-            item: items[s.idx as usize],
-            score: s.score,
-            field: s.field,
+        // 边界收在这里而不是 `items[s.idx]`：下标来自「打分时那次遍历」，
+        // 而这里又遍历了一次。两者顺序一致是当前实现的巧合（`items` 是 Vec，
+        // 期间没有任何增删），不是接口保证 —— 将来加增量更新，这条隐式契约
+        // 一破就是越界 panic，而本库 panic = abort = 整个进程死。
+        // 用 get() 的话，最坏情况只是少一条结果，看得见、也赔得起。
+        .filter_map(|s| {
+            items.get(s.idx as usize).map(|item| Hit {
+                item,
+                score: s.score,
+                field: s.field,
+            })
         })
         .collect()
 }

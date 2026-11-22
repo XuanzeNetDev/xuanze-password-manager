@@ -9,6 +9,8 @@ use windows_sys::Win32::Security::Cryptography::{
     CryptProtectData, CryptUnprotectData, CRYPT_INTEGER_BLOB,
 };
 use windows_sys::Win32::Storage::FileSystem::GetVolumeInformationW;
+use zeroize::{Zeroize, Zeroizing};
+use xz_core::secure::SecretBytes;
 
 /// 取 `FOLDERID_RoamingAppData` 的真实路径。
 ///
@@ -68,6 +70,49 @@ fn auto_unlock_path() -> Option<PathBuf> {
     Some(base.join("cn.xuanze.vault").join("auto_unlock"))
 }
 
+/// 自动锁定分钟数的存放文件。纯文本，不是秘密。
+fn autolock_path() -> Option<PathBuf> {
+    let base = roaming_appdata()?;
+    Some(base.join("cn.xuanze.vault").join("autolock"))
+}
+
+/// 自动锁定的闲置分钟数。默认 5 分钟。
+///
+/// 为什么不放前端的 `localStorage`：清一次 WebView 数据就回到默认值，
+/// 而用户以为自己设的是 30 分钟 —— 这种「设置其实没生效」的不一致，
+/// 在安全选项上尤其不能有。
+#[must_use]
+pub fn autolock_minutes() -> u32 {
+    /// 默认值。也是文件缺失/读不懂时的兜底。
+    const DEFAULT: u32 = 5;
+    let Some(path) = autolock_path() else {
+        return DEFAULT;
+    };
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return DEFAULT;
+    };
+    text.trim()
+        .parse::<u32>()
+        .map(|v| v.clamp(1, MAX_AUTOLOCK_MINUTES))
+        .unwrap_or(DEFAULT)
+}
+
+/// 自动锁定分钟数的上界。再长就接近「实际上不锁」了。
+pub const MAX_AUTOLOCK_MINUTES: u32 = 120;
+
+/// 写入自动锁定分钟数。
+pub fn set_autolock_minutes(minutes: u32) -> Result<u32, String> {
+    let minutes = minutes.clamp(1, MAX_AUTOLOCK_MINUTES);
+    let Some(path) = autolock_path() else {
+        return Err("拿不到应用数据目录".to_owned());
+    };
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("建不了目录：{e}"))?;
+    }
+    std::fs::write(&path, minutes.to_string()).map_err(|e| format!("写不了设置：{e}"))?;
+    Ok(minutes)
+}
+
 /// 免密码模式是否已开启。
 #[must_use]
 pub fn auto_unlock_enabled() -> bool {
@@ -91,9 +136,14 @@ pub fn enable_auto_unlock(vault_id: &str, key: &[u8]) -> Result<(), String> {
         std::fs::create_dir_all(dir).map_err(|e| format!("建不了目录：{e}"))?;
     }
     // 格式：vault_id 换行 主密钥十六进制
-    let payload = [vault_id, "\n", &to_hex(key)].concat();
-    let sealed = dpapi_protect(payload.as_bytes())?;
-    std::fs::write(&path, sealed).map_err(|e| format!("写不了免密码标记：{e}"))?;
+    //
+    // 这条 payload 里握着**主密钥本身**（以 hex 形式）。它是整个产品里
+    // 最不能留在堆上的字符串 —— 早先这里是一个裸 `String`，封存完就
+    // 交给分配器，那段内存里还躺着能解开全库的钥匙。
+    // 现在从拼接到 drop 全程 `Zeroizing`。
+    let payload = Zeroizing::new(format!("{vault_id}\n{}", to_hex(key).as_str()));
+    let sealed = Zeroizing::new(dpapi_protect(payload.as_bytes())?);
+    std::fs::write(&path, sealed.as_slice()).map_err(|e| format!("写不了免密码标记：{e}"))?;
     restrict_acl(&path);
     Ok(())
 }
@@ -106,11 +156,15 @@ pub fn disable_auto_unlock() {
 }
 
 /// 取出封存的主密钥。未开启、库不匹配、或解不开都返回 `None`。
-pub fn load_auto_unlock(vault_id: &str) -> Option<Vec<u8>> {
+///
+/// 返回 `SecretBytes` 而不是裸 `Vec<u8>`：调用方拿到后会立刻用掉，
+/// 但「调用方自己记得擦」这件事早就证明靠不住 —— 早先这里返回裸 Vec，
+/// 上层拷进 `SecretBytes` 之后，原来那一份仍然带着 32 字节主密钥躺在堆上。
+pub fn load_auto_unlock(vault_id: &str) -> Option<SecretBytes> {
     let path = auto_unlock_path()?;
     let sealed = std::fs::read(path).ok()?;
     let plain = dpapi_unprotect(&sealed).ok()?;
-    let text = String::from_utf8(plain).ok()?;
+    let text = Zeroizing::new(String::from_utf8(plain.to_vec()).ok()?);
 
     let mut lines = text.lines();
     let tid = lines.next()?;
@@ -118,11 +172,12 @@ pub fn load_auto_unlock(vault_id: &str) -> Option<Vec<u8>> {
     if tid != vault_id {
         return None;
     }
-    from_hex(hex)
+    from_hex(hex).map(SecretBytes::from_vec)
 }
 
-fn to_hex(b: &[u8]) -> String {
-    let mut s = String::with_capacity(b.len() * 2);
+/// 32 字节 → 64 个 hex 字符。返回 `Zeroizing`：它承载的是主密钥。
+fn to_hex(b: &[u8]) -> Zeroizing<String> {
+    let mut s = Zeroizing::new(String::with_capacity(b.len() * 2));
     for x in b {
         use std::fmt::Write as _;
         let _ = write!(s, "{x:02x}");
@@ -165,7 +220,11 @@ pub fn is_known_vault(vault_id: &str) -> bool {
 ///
 /// 用来区分「第一次使用」和「绑定材料丢了」——这两种情况都表现为
 /// `machine.bind` 不存在，但处理方式完全相反。
-fn has_registered_vault() -> bool {
+///
+/// 前端也靠它判断「该显示注册页还是登录页」：`localStorage` 里那条
+/// 「上次用的路径」清一次 WebView 数据就没了，拿它当判据会让老用户
+/// 走进注册流程、在默认路径上盖掉原来那个库。判据必须问后端。
+pub fn has_registered_vault() -> bool {
     !known_vaults().is_empty()
 }
 
@@ -183,7 +242,7 @@ fn known_vaults() -> Vec<String> {
     let Ok(plain) = dpapi_unprotect(&sealed) else {
         return Vec::new();
     };
-    String::from_utf8(plain)
+    String::from_utf8(plain.to_vec())
         .map(|s| {
             s.lines()
                 .map(str::trim)
@@ -287,7 +346,7 @@ fn volume_serial() -> Option<String> {
 ///
 /// 存在 `%APPDATA%\cn.xuanze.vault\machine.bind`，
 /// 用 DPAPI 以当前用户身份加密。拷到别的机器/账号解不开。
-fn local_secret() -> Result<Vec<u8>, String> {
+fn local_secret() -> Result<Zeroizing<Vec<u8>>, String> {
     let path = binding_path().ok_or("拿不到应用数据目录")?;
     if path.is_file() {
         let sealed = std::fs::read(&path).map_err(|e| format!("读不了绑定材料：{e}"))?;
@@ -312,14 +371,17 @@ fn local_secret() -> Result<Vec<u8>, String> {
 
     // 第一次使用：生成 32 字节随机串并封存。
     // 复用核心库的随机源（BCryptGenRandom，失败就 abort）
-    let secret: [u8; 32] = xz_core::kdf::random_bytes::<32>();
-    let sealed = dpapi_protect(&secret)?;
+    let mut secret: [u8; 32] = xz_core::kdf::random_bytes::<32>();
+    let sealed = Zeroizing::new(dpapi_protect(&secret)?);
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| format!("建不了目录：{e}"))?;
     }
-    std::fs::write(&path, &sealed).map_err(|e| format!("写不了绑定材料：{e}"))?;
+    std::fs::write(&path, sealed.as_slice()).map_err(|e| format!("写不了绑定材料：{e}"))?;
     restrict_acl(&path);
-    Ok(secret.to_vec())
+    // 栈上这一份也要擦：它没有 Drop，离开作用域只是「不再引用」。
+    let out = Zeroizing::new(secret.to_vec());
+    secret.zeroize();
+    Ok(out)
 }
 
 /// 产出喂给 `Vault` 的 pepper。
@@ -327,7 +389,7 @@ fn local_secret() -> Result<Vec<u8>, String> {
 /// 每次开库都要重新取（DPAPI 解密本身很便宜）。
 pub fn pepper() -> Result<Vec<u8>, String> {
     let secret = local_secret()?;
-    Ok(xz_core::binding::make_pepper(&secret, &machine_identity()))
+    Ok(xz_core::binding::make_pepper(secret.as_slice(), &machine_identity()))
 }
 
 /// 尽力把文件权限收紧到只有当前用户可读。
@@ -435,7 +497,10 @@ fn dpapi_protect(data: &[u8]) -> Result<Vec<u8>, String> {
 }
 
 /// DPAPI 解密（当前用户）。换机器或换账号会失败。
-fn dpapi_unprotect(data: &[u8]) -> Result<Vec<u8>, String> {
+///
+/// 解出来的**是明文**（机器串 / 主密钥 hex / 登记表），所以返回
+/// `Zeroizing` 而不是 `Vec<u8>`：出了这个函数也不许留残影。
+fn dpapi_unprotect(data: &[u8]) -> Result<Zeroizing<Vec<u8>>, String> {
     if data.is_empty() {
         return Err("绑定材料为空".to_owned());
     }
@@ -464,7 +529,9 @@ fn dpapi_unprotect(data: &[u8]) -> Result<Vec<u8>, String> {
     }
     // SAFETY: ok != 0 时 output 有效
     let bytes = unsafe {
-        let v = std::slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec();
+        let v = Zeroizing::new(
+            std::slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec(),
+        );
         LocalFree(output.pbData as *mut core::ffi::c_void);
         v
     };

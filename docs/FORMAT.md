@@ -1,9 +1,15 @@
-# 璇泽密钥库 · 文件格式规范 v2
+# 璇泽密钥库 · 文件格式规范
 
-> 版本：1 · 状态：稳定 · 最后修改：2026-11-21
+> **格式版本：2**（头里 `version` 字段 `= 0x0002`，代码常量 `FORMAT_VERSION = 2`）
+> 状态：稳定 · 最后修改：2026-11-22
 >
 > 本文档是格式的**规范来源**。实现（`crates/xz-core`）与文档不一致时，文档与实现
 > 同时视为缺陷，须一起提交修复。任何破坏兼容性的改动都必须提升 `version` 字段。
+>
+> **关于文中的 `v1`**：HKDF 的 `info` 标签和校验块明文里带 `v1`（如
+> `xzvlt/v1/payload`），那是**用途标签的命名空间**，不是格式版本号。
+> 改这些字面量等于改格式，会让所有既有文件解不开；格式版本由头里的
+> `version` 字段单独表达。
 
 ---
 
@@ -13,8 +19,9 @@
    这让「降级攻击」（把 KDF 参数改小、换算法）在密码学上不可行，不需要额外逻辑。
 2. **两个独立密文段。** 索引与正文分开加密，用不同子密钥。
    索引可以在不解密正文的情况下单独读取，为将来「只给搜索结果的只读预览」留出口。
-3. **固定结构，无 TLV。** v1 只有三个定长/带长度前缀的段。
-   TLV 好扩展但要线性扫描，v1 用不到；真需要扩展时升 v2。
+3. **固定结构，无 TLV。** 整个文件只有三个定长或带长度前缀的段
+   （索引密文、正文密文、校验块）。TLV 更易扩展但要线性扫描，
+   当前规模用不到；真需要按字段随机访问时，再以提升 `version` 的方式引入。
 4. **参数有上限。** 文件里可声明 KDF 参数，但读取端**强制**校验边界（见 §4）。
    恶意构造一个 `memory_kib = 4 GiB` 的 vault 就能把客户端打死，必须拦住。
 5. **不透露密码是否正确。** 密码错误、文件被篡改、段损坏，对外都表现为同一个错误。
@@ -90,8 +97,8 @@
 
 ### 为什么盐永不轮换
 
-轮换盐意味着用新盐重新派生主密钥、重新加密全部数据。v1 里换主密码时确实会连盐
-一起换（`Vault::change_password`），但**日常保存不碰盐**。若每次保存都换盐，
+轮换盐意味着用新盐重新派生主密钥、重新加密全部数据。**换主密码时确实会连盐
+一起换**（`Vault::change_password_bound`），但**日常保存不碰盐**。若每次保存都换盐，
 等于每次保存都要重跑 KDF 并全量重加密——与「极致性能」直接冲突，且没有安全收益：
 salt 的作用是防预计算表和跨库关联，一次性足够。
 
@@ -119,6 +126,10 @@ verify_key  = HKDF-SHA256(master_key, info = "xzvlt/v1/verify",  len = 32)
 
 `HKDF` 的 salt 参数为 `None`（即全零盐），因为 `master_key` 本身已经是高熵随机值，
 不需要再搅一次。用途隔离靠 `info` 串完成——三个子密钥互不通用，泄露一把不会连坐。
+
+> **`info` 里的 `v1` 不是版本号。** 它只是这套用途标签创建时取的命名空间前缀。
+> 格式版本升到 2 之后，这三条字面量刻意**保持不变**——改了就等于换一套派生规则，
+> 所有既有文件会立刻解不开。格式版本始终只看文件头里的 `version` 字段。
 
 ### 3.2 加密
 
@@ -161,7 +172,11 @@ verify_block = nonce(12) || AES-256-GCM(verify_key, nonce, "xzvlt/v1/verify-ok",
 | `paranoid`（默认） | 262 144 | 4 | 4 | ≈ 510 ms |
 
 实测环境：Windows / Ryzen（32 逻辑核）/ release 构建。
-具体数字随机器浮动，量级是关键：**KDF 是打开 vault 唯一值得等的部分**。
+具体数字随机器浮动，量级是关键：**KDF 是打开 vault 时唯一值得等的部分。**
+
+另有一处也会跑 KDF：导出明文、导入、改主密码、开关免密码模式 —— 这四件事
+都要重新派生一次来确认「你知道主密码」。那不是格式的一部分，是应用层的闸门，
+见 `docs/ARCHITECTURE.md` §2.2。
 
 ---
 
@@ -252,7 +267,7 @@ verify_block = nonce(12) || AES-256-GCM(verify_key, nonce, "xzvlt/v1/verify-ok",
    ├─ 认证失败 / 明文不符 → BadPasswordOrTampered
 6. decrypt index 段 → 反序列化
 7. decrypt body 段  → 反序列化 → 建 HashMap + Index
-8. 以正文为准重建索引（落盘索引仅供 v2 快速路径使用）
+8. 以正文为准重建索引（落盘索引仅供快速路径使用）
 ```
 
 第 8 步的取舍：落盘的索引和正文理论上一致，但**不信任**它。
@@ -269,7 +284,7 @@ verify_block = nonce(12) || AES-256-GCM(verify_key, nonce, "xzvlt/v1/verify-ok",
 3. 索引序列化 → index_key 加密
 4. 生成 verify_block
 5. 拼接完整字节
-6. 写同目录临时文件 .<name>.tmp → fsync → rename 覆盖
+6. 写同目录临时文件 .<name>.<16字节随机 hex>.tmp → fsync → rename 覆盖
 ```
 
 第 6 步是**原子保存**。断电或崩溃时，磁盘上要么是完整旧文件、要么是完整新文件，
@@ -312,10 +327,10 @@ verify_block = nonce(12) || AES-256-GCM(verify_key, nonce, "xzvlt/v1/verify-ok",
 ## 9. 已知限制与后续待办
 
 1. **索引不轮换。** 每次保存都全量重加密正文。5 万条时保存 ≈ 400 ms，
-   对个人库够用，但不适合「十万条 + 高频写入」。v2 可考虑分段 + 只重写变动部分。
+   对个人库够用，但不适合「十万条 + 高频写入」。后续版本可考虑分段 + 只重写变动部分。
 2. **无增量落盘。** 同上。
 3. **JSON 开销。** 5 万条正文 33 MiB，其中 JSON 语法字符占比可观。
-   v2 可在格式层换 binary，但需保留「可人工审阅」的导出路径。
+   后续版本可在格式层换 binary，但需保留「可人工审阅」的导出路径。
 4. **机器绑定是应用层行为，不在格式里。** `.xzvlt` 文件本身不含任何设备指纹，
    换台机器用 `format` 里的规则仍可解析。绑定发生在应用层：主密钥派生时混入
    本机 DPAPI 封存的随机串 + 机器名 + 卷序列号（见 `crates/xz-core/src/binding.rs`），
@@ -335,14 +350,16 @@ verify_block = nonce(12) || AES-256-GCM(verify_key, nonce, "xzvlt/v1/verify-ok",
 | 测试 | 守的是什么 |
 |---|---|
 | `wrong_password_rejected` | 错误密码必须失败且不可区分 |
+| `verify_password_rejects_wrong_password` | 「再输一次密码」那道门要真能拒错密码（不能自证） |
 | `corrupted_file_rejected` | 翻一个 bit 必须失败 |
 | `header_is_aad_so_tampering_fails` | 改头字段必须失败 |
 | `nonce_is_not_reused` | 两次加密不共用 nonce |
 | `subkeys_are_distinct` | 三把子密钥互不相等 |
 | `index_never_carries_secrets` | 索引段不含秘密 |
 | `secrets_never_searchable` | 秘密不可被搜索 |
+| `hot_zero_is_empty_not_panic` | `hot(0)` 不能下溢 panic（IPC 可达） |
 | `remove_fixes_swapped_index` | 索引删除后 id 映射不串位 |
 | `save_and_open_from_disk` | 原子保存无残留临时文件 |
 | `change_password_then_old_fails` | 换密码后旧密码失效 |
 
-`cargo test -p xz-core` 应全绿（当前 60 项）。
+`cargo test -p xz-core` 应全绿（当前 63 项）。

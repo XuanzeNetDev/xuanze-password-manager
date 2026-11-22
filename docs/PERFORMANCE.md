@@ -1,4 +1,4 @@
-# 璇泽密钥库 · 性能报告
+﻿# 璇泽密钥库 · 性能报告
 
 > 机器：Windows / AMD Ryzen（32 逻辑核）/ Rust 1.100
 > 构建：`release`（`opt-level=3`, `lto="fat"`, `codegen-units=1`, `panic="abort"`）
@@ -159,7 +159,7 @@ SIMD 优化过的；手写循环在短 needle 上完全打不过。回退。
 ## 7. 复现
 
 ```bash
-cargo test -p xz-core          # 60 项，应全绿
+cargo test -p xz-core          # 63 项，应全绿
 cargo run --release -p xz-bench
 ```
 

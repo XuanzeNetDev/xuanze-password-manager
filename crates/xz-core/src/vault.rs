@@ -196,8 +196,6 @@ impl Vault {
         self.path = Some(path.into());
     }
 
-    /// 库的稳定标识（十六进制）。应用侧靠它判断「是不是自己创建的那个库」。
-    #[must_use]
     /// 取出主密钥的切片，供「本机自动解锁」封存用。
     ///
     /// 调用方只应该把它立刻交给 `CryptProtectData` 封存，
@@ -206,6 +204,8 @@ impl Vault {
         self.master_key.as_slice()
     }
 
+    /// 库的稳定标识（十六进制）。应用侧靠它判断「是不是自己创建的那个库」。
+    #[must_use]
     pub fn vault_id(&self) -> String {
         let mut s = String::with_capacity(32);
         for b in self.vault_id {
@@ -419,28 +419,68 @@ impl Vault {
 
     /// 校验一个密码是不是当前库的密码。
     ///
-    /// 不改变任何状态，只走一次 KDF + 校验块。用于「改密码前先验旧密码」。
+    /// 不改变任何状态。用于「导出前再确认一次是本人」「改密码前先验旧密码」。
     pub fn verify_password(&self, password: &str) -> Result<()> {
         self.verify_password_bound(password, &[])
     }
 
     /// 校验密码，带机器绑定的 pepper。
+    ///
+    /// ## 判定方式：重新派生，再和内存里的主密钥做常量时间比对
+    ///
+    /// 这里曾经是「用派生出的 key 生成一个校验块，再用同一把 key 校验它」——
+    /// 那是**自证**：任何密码派生出的 key 都能生成并校验自己的块，
+    /// 所以无论输什么都会通过。而这道门守的是「导出全库明文」「改主密码」
+    /// 「开免密码模式」这三件事，它的失效等于把产品的主要闸门一起拆掉。
+    ///
+    /// 正确的判据只有一个：**用这个密码重新派生，看能不能得到同一把主密钥。**
+    /// 派生本身是慢的（这正是它安全的原因），所以调用方应该把它放到锁外、
+    /// 后台线程里做 —— 见 `kdf_material` / `matches_master_key`。
     pub fn verify_password_bound(&self, password: &str, pepper: &[u8]) -> Result<()> {
-        let header_bytes = FileHeader {
-            version: crate::FORMAT_VERSION,
-            kdf: self.kdf,
-            salt: self.salt,
-            vault_id: self.vault_id,
-        }
-        .to_bytes();
-
         let key = if pepper.is_empty() {
             kdf::derive_master_key(password.as_bytes(), &self.salt, self.kdf)?
         } else {
             crate::binding::derive_bound_key(password.as_bytes(), pepper, &self.salt, self.kdf)?
         };
-        let verify = codec::make_verify_block(&key, &header_bytes)?;
-        codec::check_verify_block(&key, &header_bytes, &verify)
+        if !crate::secure::ct_eq(key.as_slice(), self.master_key.as_slice()) {
+            return Err(Error::BadPasswordOrTampered);
+        }
+        Ok(())
+    }
+
+    /// 校验所需的公开材料：KDF 参数 + 盐。
+    ///
+    /// 这两样都在文件头里明文写着，脱离主密钥没有任何攻击价值。
+    /// 单独暴露出来是为了让调用方能在**锁外**用它们重新派生 ——
+    /// KDF 是全场唯一的慢路径，持锁跑会把界面冻住。
+    #[must_use]
+    pub fn kdf_material(&self) -> (KdfParams, [u8; 32]) {
+        (self.kdf, self.salt)
+    }
+
+    /// 与内存里的主密钥做常量时间比对。
+    ///
+    /// 配合 `kdf_material` + `derive_key_with` 使用：
+    /// 锁内取材料 → 放锁 → 后台派生 → 锁内比对（微秒级）。
+    #[must_use]
+    pub fn matches_master_key(&self, candidate: &SecretBytes) -> bool {
+        crate::secure::ct_eq(candidate.as_slice(), self.master_key.as_slice())
+    }
+
+    /// 按给定参数与盐派生主密钥（不碰 `Vault` 状态）。
+    ///
+    /// `pepper` 为空表示不绑定本机。给锁外做密码校验用。
+    pub fn derive_key_with(
+        password: &str,
+        pepper: &[u8],
+        salt: &[u8],
+        params: KdfParams,
+    ) -> Result<SecretBytes> {
+        if pepper.is_empty() {
+            kdf::derive_master_key(password.as_bytes(), salt, params)
+        } else {
+            crate::binding::derive_bound_key(password.as_bytes(), pepper, salt, params)
+        }
     }
 
     /// 用新密码把当前内容重新封装成完整文件字节，**不改动自身状态**。
@@ -832,6 +872,38 @@ mod binding_tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
+
+    /// `verify_password` 必须真的拒绝错密码。
+    ///
+    /// 这条守的是「导出 / 导入 / 改密码 / 开免密码模式」那几道要重输密码的门。
+    /// 曾经的实现是「用派生出的 key 生成校验块，再用同一把 key 校验它」——
+    /// 那是自证：任何密码都会通过，门等于没有。
+    #[test]
+    fn verify_password_rejects_wrong_password() {
+        use crate::kdf::KdfParams;
+
+        // 无绑定（pepper 为空）的库
+        let v = Vault::create("right-password", KdfParams::light()).unwrap();
+        assert!(v.verify_password("right-password").is_ok());
+        assert!(
+            v.verify_password("wrong-password").is_err(),
+            "错密码必须被拒绝"
+        );
+
+        // 绑定本机的库
+        let pepper = crate::binding::make_pepper(&[7u8; 32], "PC1-ABCD1234");
+        let b = Vault::create_bound("right-password", KdfParams::light(), &pepper).unwrap();
+        assert!(b.verify_password_bound("right-password", &pepper).is_ok());
+        assert!(
+            b.verify_password_bound("wrong-password", &pepper).is_err(),
+            "绑定库也必须拒绝错密码"
+        );
+        // 密码对但 pepper 不对 → 也是错的（派生不出同一把钥匙）
+        assert!(
+            b.verify_password_bound("right-password", b"other-pepper").is_err(),
+            "pepper 不匹配同样不能通过"
+        );
+    }
 
     /// pepper 不同 → 派生出的主密钥不同 → 校验块过不去。
     #[test]

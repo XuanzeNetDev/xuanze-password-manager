@@ -328,13 +328,20 @@ fn smbios_uuid() -> Option<[u8; 16]> {
     if got == 0 || got as usize > buf.len() {
         return None;
     }
-    let data = &buf[..got as usize];
 
-    // RawSMBIOSData：4 字节版本信息，然后 u32 Length，然后是结构表本身。
-    let table_len = u32::from_le_bytes([data[4], data[5], data[6], data[7]]) as usize;
+    parse_smbios_uuid(&buf[..got as usize])
+}
+
+/// 从 RawSMBIOSData 里找出 Type 1（System Information）结构里的 UUID。
+///
+/// 纯粹按字节解析，不碰系统 API —— 抽出来是为了能测。这段是全程唯一
+/// 会读「不可信二进制」的地方：固件写什么就返回什么，可能被构造、可能残缺。
+/// 所有下标都要么先判长度、要么用 `get`。
+fn parse_smbios_uuid(data: &[u8]) -> Option<[u8; 16]> {
+    // 前 4 字节是 SMBIOS 版本，接着是 u32 表长度，然后是结构表。
+    let table_len = u32::from_le_bytes(data.get(4..8)?.try_into().ok()?) as usize;
     let table = data.get(8..8usize.checked_add(table_len)?)?;
 
-    // 逐个结构扫，找 Type 1（System Information）。
     let mut off = 0usize;
     while off + 4 <= table.len() {
         let stype = table[off];
@@ -342,7 +349,8 @@ fn smbios_uuid() -> Option<[u8; 16]> {
         if slen < 4 || off + slen > table.len() {
             break;
         }
-        // Type 1 的 UUID 在结构内偏移 0x08，长 16 字节；整个结构至少 0x19 字节。
+        // Type 1 的 UUID 在结构内偏移 0x08，长 16 字节，所以结构至少要 24 字节。
+        // 用 0x19（25）是为覆盖紧随其后的 SKU 字符串索引字节。
         if stype == 1 && slen >= 0x19 {
             let mut uuid = [0u8; 16];
             uuid.copy_from_slice(&table[off + 8..off + 24]);
@@ -651,4 +659,112 @@ fn dpapi_unprotect(data: &[u8]) -> Result<Zeroizing<Vec<u8>>, String> {
         v
     };
     Ok(bytes)
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 拼一段 RawSMBIOSData：8 字节头（版本 + 表长）+ 结构表。
+    fn raw(table: &[u8]) -> Vec<u8> {
+        let mut v = vec![0x03, 0x03, 0x00, 0x00]; // SMBIOS 3.3
+        v.extend_from_slice(&(table.len() as u32).to_le_bytes());
+        v.extend_from_slice(table);
+        v
+    }
+
+    /// 一个 Type 1 结构：`slen` 字节结构体，UUID 放在偏移 8。
+    fn type1(slen: usize, uuid: [u8; 16]) -> Vec<u8> {
+        let mut s = vec![0u8; slen];
+        s[0] = 1;
+        s[1] = slen as u8;
+        if slen >= 24 {
+            s[8..24].copy_from_slice(&uuid);
+        }
+        s.extend_from_slice(&[0, 0]); // 格式化区结束
+        s
+    }
+
+    /// 正常取到 UUID。
+    #[test]
+    fn parses_uuid_from_type1() {
+        let uuid = [
+            0x4c, 0x4b, 0xb9, 0xa4, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa,
+            0xbb, 0xcc,
+        ];
+        let data = raw(&type1(0x1b, uuid));
+        assert_eq!(parse_smbios_uuid(&data), Some(uuid));
+    }
+
+    /// Type 1 前面还有别的结构时，要能跳过它们继续找。
+    #[test]
+    fn skips_preceding_structures() {
+        let uuid = [7u8; 16];
+        let mut table = vec![0u8, 0x04, 0, 0, 0, 0]; // Type 0，4 字节结构体 + 双 NUL
+        table.extend_from_slice(&type1(0x1b, uuid));
+        assert_eq!(parse_smbios_uuid(&raw(&table)), Some(uuid));
+    }
+
+    /// 厂商没填 UUID（全 0 / 全 FF）时必须拒绝，否则一大批机器共用同一个指纹。
+    #[test]
+    fn rejects_blank_uuid() {
+        assert_eq!(parse_smbios_uuid(&raw(&type1(0x1b, [0u8; 16]))), None);
+        assert_eq!(parse_smbios_uuid(&raw(&type1(0x1b, [0xFFu8; 16]))), None);
+    }
+
+    /// 结构体长度不够装 UUID 时不读越界，继续扫，最终无果。
+    #[test]
+    fn too_short_type1_is_ignored() {
+        // 0x18 = 24 字节，刚好差 SKU 索引那一个字节，按规则不收
+        assert_eq!(parse_smbios_uuid(&raw(&type1(0x18, [1u8; 16]))), None);
+        // 连 UUID 都装不下
+        assert_eq!(parse_smbios_uuid(&raw(&type1(0x14, [1u8; 16]))), None);
+    }
+
+    /// 各种畸形输入只返回 `None`，不 panic。
+    #[test]
+    fn malformed_inputs_never_panic() {
+        assert_eq!(parse_smbios_uuid(&[]), None); // 空
+        assert_eq!(parse_smbios_uuid(&[0, 0, 0, 0]), None); // 不足 8 字节
+        assert_eq!(parse_smbios_uuid(&[0; 7]), None);
+
+        // 表长声明得比实际数据大
+        let mut lying = vec![0x03, 0x03, 0x00, 0x00];
+        lying.extend_from_slice(&999u32.to_le_bytes());
+        lying.extend_from_slice(&type1(0x1b, [3u8; 16]));
+        assert_eq!(parse_smbios_uuid(&lying), None);
+
+        // 表长声明为 0
+        let mut empty = vec![0x03, 0x03, 0x00, 0x00];
+        empty.extend_from_slice(&0u32.to_le_bytes());
+        assert_eq!(parse_smbios_uuid(&empty), None);
+
+        // 结构长度字段为 0（会导致死循环，必须被 `slen < 4` 挡住）
+        let bad = raw(&[1, 0, 0, 0, 0]);
+        assert_eq!(parse_smbios_uuid(&bad), None);
+
+        // 结构长度超出表尾
+        let overflow = raw(&[1, 200, 0, 0]);
+        assert_eq!(parse_smbios_uuid(&overflow), None);
+
+        // 没有 Type 1（只有 Type 2）
+        assert_eq!(parse_smbios_uuid(&raw(&[2, 0x0f, 0, 0, 0, 0, 0, 0])), None);
+    }
+
+    /// 逐字节截断整个表，任何长度都不得 panic。
+    #[test]
+    fn truncation_at_every_length_is_safe() {
+        let full = raw(&type1(0x1b, [9u8; 16]));
+        for n in 0..full.len() {
+            let _ = parse_smbios_uuid(&full[..n]);
+        }
+    }
+
+    /// `restrict_acl` 面对不存在的路径返回 false，不 panic、不阻塞。
+    #[test]
+    fn restrict_acl_on_missing_path_returns_false() {
+        let missing = std::path::Path::new(r"Z:\no-such-dir-3f9a\x.txt");
+        assert!(!restrict_acl(missing));
+    }
 }

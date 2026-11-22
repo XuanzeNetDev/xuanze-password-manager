@@ -4,7 +4,7 @@
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange)](https://www.rust-lang.org/)
 [![Tauri](https://img.shields.io/badge/tauri-v2-24C8DB)](https://tauri.app/)
 [![Platform](https://img.shields.io/badge/platform-Windows-lightgrey)]()
-[![Tests](https://img.shields.io/badge/tests-92%20passing-brightgreen)]()
+[![Tests](https://img.shields.io/badge/tests-102%20passing-brightgreen)]()
 
 **A local-first password manager for Windows.**
 Rust core + Tauri v2 shell. Argon2id + AES-256-GCM. No cloud, no account, no telemetry.
@@ -544,9 +544,10 @@ cargo tauri build --config '{"build":{"frontendDist":"../dist","devUrl":null}}'
 
 **v1.0.0。** 格式、核心库、桌面壳均已定型。
 
-`cargo test --workspace` 输出 92 项通过：核心库 69 项，桌面壳 23 项。覆盖范围
+`cargo test --workspace` 输出 102 项通过：核心库 69 项，桌面壳 33 项。覆盖范围
 包括畸形输入（逐字节篡改、长度字段极值、全长度截断、随机字节）、导入导出的
-字段级往返、绑定块封解、备份容器加解密。`cargo clippy --workspace --all-targets
+字段级往返、绑定块封解、备份容器加解密；桌面壳另有 SMBIOS 结构解析的
+合法与畸形用例、表格解析器面对畸形 XML 的抗压测试。`cargo clippy --workspace --all-targets
 -D warnings` 无告警。CI 在 Ubuntu 上运行核心库测试与 clippy，在 Windows 上运行
 前端类型检查、生产构建与桌面壳测试。
 

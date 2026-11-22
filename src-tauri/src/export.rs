@@ -1461,3 +1461,110 @@ mod tests {
         assert!(!out.is_empty(), "截断后仍应解出字段");
     }
 }
+
+    /// 手写的表格解析器直接吃不可信输入。这里喂各种畸形 XML，
+    /// 要求只有一个：**不许 panic**，要么给出结果、要么跳过。
+    ///
+    /// 为什么值得专门测：`parse_sheet_xml` 是全部外部输入里唯一一个
+    /// 「自己解析结构化文本」的地方，其余路径都是 serde 或定长字段。
+    /// 它不解析 DTD / 实体声明，所以没有实体扩展面；剩下要守的就是越界。
+    #[test]
+    fn malformed_sheet_xml_never_panics() {
+        let shared: Vec<String> = vec!["甲".into(), "乙".into()];
+        let cases: Vec<&str> = vec![
+            "",
+            "<worksheet>",
+            "<worksheet/>",
+            "<worksheet></worksheet>",
+            "<worksheet><sheetData></sheetData></worksheet>",
+            // 缺 r 属性
+            "<worksheet><sheetData><row><c><v>1</v></c></row></sheetData></worksheet>",
+            // r 属性为空
+            "<worksheet><sheetData><row><c r=\"\"><v>1</v></c></row></sheetData></worksheet>",
+            // r 只有列字母、没有行号
+            "<worksheet><sheetData><row><c r=\"A\"><v>1</v></c></row></sheetData></worksheet>",
+            // 行号极大
+            "<worksheet><sheetData><row r=\"999999999999999999999\"><c r=\"A1\"><v>1</v></c></row></sheetData></worksheet>",
+            // 列字母极长
+            "<worksheet><sheetData><row><c r=\"AAAAAAA999999999\"><v>1</v></c></row></sheetData></worksheet>",
+            // 共享字符串索引越界
+            "<worksheet><sheetData><row><c r=\"A1\" t=\"s\"><v>99999</v></c></row></sheetData></worksheet>",
+            // 共享字符串索引是垃圾
+            "<worksheet><sheetData><row><c r=\"A1\" t=\"s\"><v>abc</v></c></row></sheetData></worksheet>",
+            // 负索引
+            "<worksheet><sheetData><row><c r=\"A1\" t=\"s\"><v>-1</v></c></row></sheetData></worksheet>",
+            // 未闭合的 c 与 v
+            "<worksheet><sheetData><row><c r=\"A1\"><v>1</worksheet>",
+            // 嵌套但没闭合
+            "<worksheet><sheetData><row><c r=\"A1\"><is><t>x</is></c></row>",
+            // 自闭合的 c
+            "<worksheet><sheetData><row><c r=\"A1\"/></row></sheetData></worksheet>",
+            // 只声明没内容
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
+            // 数字字符引用残缺
+            "<worksheet><sheetData><row><c r=\"A1\" t=\"inlineStr\"><is><t>&#xZZ;</t></is></c></row></sheetData></worksheet>",
+            // 双 NUL 与裸标记
+            "\u{0}\u{0}<row><c r=\"A1\"><v>1</v></c>",
+        ];
+        for xml in cases {
+            // 崩了就是 bug；返回空表是允许的
+            let _ = parse_sheet_xml(xml, &shared);
+        }
+    }
+
+    /// `xml_unescape` 同样吃不可信输入，必须只返回字符串。
+    #[test]
+    fn xml_unescape_handles_broken_references() {
+        for s in [
+            "",
+            "&",
+            "&;",
+            "&#;",
+            "&#x;",
+            "&#xZZ;",
+            "&#99999999;",
+            "&#xFFFFFFFF;",
+            "&&amp;",
+            "&amp",
+            "<>&\"'",
+        ] {
+            let _ = xml_unescape(s);
+        }
+        // 正常路径仍要正确
+        assert_eq!(xml_unescape("&amp;&lt;&gt;&quot;&apos;"), "&<>\"'");
+        assert_eq!(xml_unescape("&#65;&#x42;"), "AB");
+    }
+
+    /// 自定义字段的转义必须能原样往返，包括分隔符本身出现在值里的情况。
+    #[test]
+    fn custom_field_escaping_round_trips() {
+        let cases = [
+            vec![("bucket".to_string(), "my-bucket".to_string(), false)],
+            vec![("a".to_string(), "x;y".to_string(), false)],
+            vec![("a".to_string(), "x\\y".to_string(), false)],
+            vec![("a".to_string(), "x=y".to_string(), false)],
+            vec![("a=b".to_string(), "v".to_string(), false)],
+            vec![
+                ("k1".to_string(), "v1".to_string(), false),
+                ("k2".to_string(), ";\\=".to_string(), true),
+            ],
+        ];
+        for fields in cases {
+            let fields: Vec<Field> = fields
+                .into_iter()
+                .map(|(name, value, secret)| Field {
+                    name,
+                    value,
+                    secret,
+                })
+                .collect();
+            let encoded = encode_fields(&fields);
+            let decoded = decode_fields(&encoded);
+            assert_eq!(decoded.len(), fields.len(), "编码后解码数量不符: {encoded}");
+            for (a, b) in fields.iter().zip(decoded.iter()) {
+                assert_eq!(a.name, b.name, "字段名往返不一致: {encoded}");
+                assert_eq!(a.value, b.value, "字段值往返不一致: {encoded}");
+                assert_eq!(a.secret, b.secret, "敏感标记往返不一致: {encoded}");
+            }
+        }
+    }

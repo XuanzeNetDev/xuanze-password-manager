@@ -1,0 +1,1734 @@
+/*
+ * 璇泽密钥库 · 样式
+ *
+ * 一屏两栏：极窄的条目列表 + 一张表。数据本身就是表格状的，就直接摊成表。
+ * 没有卡片、没有分割线，靠留白和字号分层。
+ */
+
+/* ───────────── 变量 ───────────── */
+
+:root[data-theme="dark"] {
+  --bg: #0e1013;
+  --side: #121417;
+  --surf: #191c21;
+  --hover: #202429;
+  --sel: #1e2a3a;
+
+  --line: #23272e;
+  --line-soft: #1a1d22;
+
+  --fg: #e9ebef;
+  --mid: #a0a7b3;
+  --dim: #667080;
+
+  --accent: #4a9eff;
+  --accent-hi: #2f7fe6;
+  --accent-soft: rgba(74, 158, 255, 0.13);
+
+  --danger: #f2555a;
+  --warn: #e0a03c;
+  --ok: #35c07f;
+  --shadow: 0 18px 50px rgba(0, 0, 0, 0.55);
+  /* 锁屏：纯黑磨砂，只留极淡一层渐变 */
+  --lock-bg: #08090b;
+  /* 流线背景：冷蓝 + 一点紫，低饱和，只做氛围 */
+  --flow-opacity: 1;
+  --side-glass: rgba(18, 20, 23, 0.82);
+  --bg-glass: rgba(14, 16, 19, 0.66);
+  /* 丝带：暗色下用极深的灰带 + 银白高光，贴公司暗色壁纸 */
+  --flow-a: rgba(64, 132, 235, 0.42);
+  --flow-b: rgba(138, 96, 232, 0.32);
+  --flow-c: rgba(38, 176, 196, 0.26);
+
+
+
+  --lock-top: #171b22;
+  --lock-mid: #0c0e12;
+  --lock-bottom: #050608;
+  --lock-btn: rgba(255, 255, 255, 0.09);
+  --lock-btn-hover: rgba(255, 255, 255, 0.14);
+  --lock-btn-line: rgba(255, 255, 255, 0.14);
+  --lock-btn-fg: #e9ebef;
+  --frost: rgba(18, 20, 26, 0.40);
+  --frost-line: rgba(255, 255, 255, 0.13);
+  --fg-faint: #6d7482;}
+
+:root[data-theme="light"] {
+  --bg: #ffffff;
+  --side: #fafbfc;
+  --surf: #ffffff;
+  --hover: #f3f4f7;
+  --sel: #e8f0fe;
+
+  --line: #e7e9ee;
+  --line-soft: #f0f1f4;
+
+  --fg: #1b1e24;
+  --mid: #565e6b;
+  --dim: #8b93a0;
+
+  --accent: #1f6feb;
+  --accent-hi: #1857c2;
+  --accent-soft: rgba(31, 111, 235, 0.09);
+
+  --danger: #d92d20;
+  --warn: #a35a06;
+  --ok: #0f8f4c;
+  --shadow: 0 18px 50px rgba(20, 25, 40, 0.13);
+  /* 锁屏：纯白磨砂 + 一点冷彩 */
+  --lock-bg: #f5f6f9;
+  /* 流线背景：白底上要极淡，否则显脏 */
+  --flow-opacity: 0.9;
+  --side-glass: rgba(250, 251, 252, 0.82);
+  --bg-glass: rgba(255, 255, 255, 0.62);
+  /* 丝带：亮色下用浅灰带 + 白色高光，贴公司亮色壁纸 */
+  --flow-a: rgba(64, 130, 240, 0.30);
+  --flow-b: rgba(140, 110, 235, 0.24);
+  --flow-c: rgba(60, 185, 215, 0.20);
+
+
+
+  --lock-top: #ffffff;
+  --lock-mid: #f4f5f8;
+  --lock-bottom: #e4e8ef;
+  --lock-btn: rgba(20, 30, 50, 0.07);
+  --lock-btn-hover: rgba(20, 30, 50, 0.11);
+  --lock-btn-line: rgba(20, 30, 50, 0.14);
+  --lock-btn-fg: #1b1e24;
+  --frost: rgba(255, 255, 255, 0.55);
+  --frost-line: rgba(20, 26, 40, 0.13);
+  --fg-faint: #8b93a1;}
+
+:root {
+  --r: 8px;
+  --r-sm: 5px;
+  /* ── 动效系统 ──
+   *
+   * 传统贝塞尔的毛病是「到点骤停」。参照 HarmonyOS 的阻尼弹簧曲线：
+   * 物体到达终点前会稍稍过冲再回落，速度连续降到 0。
+   * 这里的曲线是用三次贝塞尔拟合的弹簧，过冲控制在 2% 以内 ——
+   * 能感觉到「有惯性」，但不会晃眼。
+   */
+  --t: 160ms cubic-bezier(0.22, 1, 0.36, 1);
+
+  /* 弹簧：快起、微过冲、缓落 */
+  --spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  /* 柔出：只减速，不反弹。用于大面积容器 */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  /* 标准：短距离小元素 */
+  --ease-std: cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* 编排节奏：所有元素共享这几档，避免各飞各的 */
+  --d1: 40ms;
+  --d2: 90ms;
+  --d3: 150ms;
+  --d4: 220ms;
+  --mono: "JetBrains Mono", "Cascadia Code", Consolas, ui-monospace, monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+}
+
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: "Inter", "Segoe UI Variable", "Segoe UI", "PingFang SC",
+    "Microsoft YaHei UI", "Noto Sans CJK SC", system-ui, sans-serif;
+  font-size: 13px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+#app {
+  width: 100%;
+  height: 100%;
+  /* 必须建立独立层叠上下文，压在 .flow（z-index:0）之上。
+   *
+   * 少这两行，背景层就会盖在界面上 —— 表现为「整个窗口都是渐变，
+   * 纯色的 .main 完全看不见」。之前清理样式时误删过，别再删。
+   */
+  position: relative;
+  z-index: 1;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+}
+
+::selection {
+  background: var(--accent-soft);
+}
+
+::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--line);
+  border-radius: 5px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--dim);
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* ───────────── 通用 ───────────── */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 7px 13px;
+  border-radius: var(--r);
+  color: var(--mid);
+  transition: background var(--t), color var(--t);
+  white-space: nowrap;
+}
+
+.btn:hover {
+  background: var(--hover);
+  color: var(--fg);
+}
+
+.btn.primary {
+  background: var(--accent);
+  color: #fff;
+  font-weight: 550;
+}
+
+.btn.primary:hover {
+  background: var(--accent-hi);
+}
+
+.btn.sm {
+  padding: 4px 9px;
+  font-size: 12px;
+}
+
+.link {
+  font-size: 12px;
+  color: var(--dim);
+  transition: color var(--t);
+}
+
+.link:hover {
+  color: var(--accent);
+}
+
+.ib {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 29px;
+  height: 29px;
+  border-radius: var(--r-sm);
+  color: var(--dim);
+  transition: background var(--t), color var(--t);
+}
+
+.ib:hover {
+  background: var(--hover);
+  color: var(--fg);
+}
+
+.ib svg {
+  width: 15px;
+  height: 15px;
+  pointer-events: none;
+}
+
+.ib.sm {
+  width: 22px;
+  height: 22px;
+}
+
+.ib.sm svg {
+  width: 13px;
+  height: 13px;
+}
+
+.in {
+  width: 100%;
+  padding: 8px 11px;
+  background: var(--surf);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  outline: none;
+  font: inherit;
+  color: inherit;
+  transition: border-color var(--t);
+}
+
+.in:focus {
+  border-color: var(--accent);
+}
+
+.in.mono {
+  font-family: var(--mono);
+  font-size: 12.5px;
+}
+
+textarea.in {
+  resize: vertical;
+  min-height: 62px;
+  line-height: 1.55;
+}
+
+.fld {
+  margin-bottom: 11px;
+}
+
+.flbl {
+  display: block;
+  font-size: 11px;
+  color: var(--dim);
+  margin-bottom: 5px;
+}
+
+.hint {
+  font-size: 11px;
+  color: var(--dim);
+}
+
+.err {
+  font-size: 11.5px;
+  color: var(--danger);
+  min-height: 16px;
+}
+
+.two {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 11px;
+}
+
+.dim {
+  color: var(--dim);
+}
+
+.mono {
+  font-family: var(--mono);
+}
+
+/* ───────────── 锁屏：整屏磨砂，极简 ───────────── */
+
+.lock {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  /* 半透明：让后面的流线背景透上来，锁屏也有生命感 */
+  background: transparent;
+}
+
+
+/* 磨砂层：铺满整屏 */
+/*
+ * 磨砂 + 上下渐变合成一层。
+ * 之前渐变单独放一层，被磨砂层压住了 —— 所以看起来永远是纯色。
+ * 现在渐变直接写在磨砂层的 background 上，顺序不可能再错。
+ */
+.lock::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  /* 遮罩必须“薄”。
+   *
+   * 之前这里是 62% 不透明的渐变 + 一层 frost + blur(26px)，
+   * 三层叠加把丝带彻底糊成一片雾 —— 尤其是亮主题，白底上直接看不见。
+   * 现在：渐变降到 ~30%，frost 只保留极轻的一层，
+   * 模糊从 26px 收到 10px —— 足够柔化，又不会把丝带的边缘掠走。
+   * 丝带的辨识度全靠边缘，一旦模糊过头就退化成光斑了。
+   */
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--lock-top) 22%, transparent) 0%,
+    color-mix(in srgb, var(--lock-mid) 14%, transparent) 48%,
+    color-mix(in srgb, var(--lock-bottom) 26%, transparent) 100%
+  );
+  backdrop-filter: blur(10px) saturate(108%);
+  -webkit-backdrop-filter: blur(10px) saturate(108%);
+}
+
+.lock > .grain {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.022;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='4'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+.lock-inner {
+  position: relative;
+  z-index: 2;
+  width: 380px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+
+/* 锁屏图标：用透明底的原图，不加任何边框或底板 */
+.lock-logo {
+  width: 84px;
+  height: 84px;
+  object-fit: contain;
+  margin-bottom: 22px;
+  /* 深色背景上给一点柔光，避免黑图标沉进黑底 */
+  filter: drop-shadow(0 10px 30px rgba(0, 0, 0, 0.35));
+  animation: settle 700ms var(--ease-out) both;
+}
+
+:root[data-theme="light"] .lock-logo {
+  filter: drop-shadow(0 10px 26px rgba(20, 25, 40, 0.18));
+}
+
+.lock-name {
+  font-size: 26px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  margin: 0 0 8px;
+  color: var(--fg);
+}
+
+/* 标题之后依次浮起，每层错开一点，读起来有节奏 */
+.lock-sub {
+}
+
+
+
+
+.lock-sub {
+  font-size: 13.5px;
+  color: var(--fg-faint);
+  margin: 0 0 30px;
+}
+
+.lock-input {
+  width: 100%;
+  padding: 9px 2px 13px;
+  background: none;
+  border: none;
+  border-bottom: 1.5px solid var(--frost-line);
+  border-radius: 0;
+  outline: none;
+  text-align: center;
+  font-family: var(--mono);
+  font-size: 19px;
+  letter-spacing: 0.26em;
+  color: var(--fg);
+  transition: border-color 0.16s ease;
+}
+
+/* 干掉浏览器自带的密码揭示按钮。
+ *
+ * Edge/Chromium 会在 password 输入框右侧插一个眼睛，它压在输入框上，
+ * 导致「设置密码」和「再输一次」两条下划线的可用宽度不一致 ——
+ * 视觉上就是两个框没对齐。这个功能我们不需要（软件自己有显示逻辑），
+ * 而且它长得和整体风格不搭。
+ */
+.lock-input::-ms-reveal,
+.lock-input::-ms-clear {
+  display: none;
+}
+
+.lock-input::-webkit-credentials-auto-fill-button,
+.lock-input::-webkit-strong-password-auto-fill-button {
+  visibility: hidden;
+  display: none !important;
+  pointer-events: none;
+  position: absolute;
+  right: 0;
+}
+
+.lock-input::placeholder {
+  color: var(--fg-faint);
+  letter-spacing: 0.12em;
+  font-family: inherit;
+  font-size: 15px;
+}
+
+.lock-input:focus {
+  border-bottom-color: var(--accent);
+}
+
+.lock-msg {
+  margin-top: 12px;
+  min-height: 19px;
+  font-size: 13px;
+  color: var(--danger);
+  text-align: center;
+}
+
+.lock-msg.info {
+  color: var(--fg-faint);
+}
+
+/* 登录按钮：不用满饱和蓝，跟整屏的低饱和度一致 */
+/* 用 .btn.primary.lock-go 提权，压过通用的 .btn.primary 蓝色 */
+.btn.primary.lock-go {
+  margin-top: 24px;
+  width: 100%;
+  padding: 12px;
+  border-radius: 10px;
+  font-size: 14.5px;
+  font-weight: 500;
+  background: var(--lock-btn);
+  color: var(--lock-btn-fg);
+  border: 1px solid var(--lock-btn-line);
+  transition: background var(--t), border-color var(--t), color var(--t);
+}
+
+.btn.primary.lock-go:hover {
+  background: var(--lock-btn-hover);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* 底部动作：文字按钮 + 中点分隔，不再是裸文本堆在一起 */
+/* 注册页的「不设密码」勾选 */
+.chk-skip {
+  margin-top: 14px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12.5px;
+  color: var(--fg-faint);
+  cursor: pointer;
+  user-select: none;
+}
+
+.chk-skip input {
+  accent-color: var(--accent);
+  width: 14px;
+  height: 14px;
+  cursor: pointer;
+}
+
+.chk-skip:hover {
+  color: var(--mid);
+}
+
+.lock-foot {
+  margin-top: 20px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 22px;
+}
+
+.lock-act {
+  font-size: 13px;
+  color: var(--fg-faint);
+  padding: 3px 6px;
+  border-radius: 6px;
+  transition: color var(--t), background var(--t);
+}
+
+.lock-act:hover {
+  color: var(--fg);
+  background: var(--hover);
+}
+
+.lock-note {
+  font-size: 12px;
+  color: var(--fg-faint);
+}
+
+.dot-sep {
+  color: var(--frost-line);
+  font-size: 12px;
+}
+
+.spin {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 1.5px solid var(--frost-line);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: sp 0.6s linear infinite;
+}
+
+@keyframes sp {
+  to {
+    transform: rotate(360deg);
+  }
+}
+/* ───────────── 外壳 ───────────── */
+
+.shell {
+  height: 100%;
+  display: grid;
+  grid-template-columns: 232px 1fr;
+}
+
+/* ───────────── 左栏：专辑目录 ───────────── */
+
+.side {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  /* 半透明，让流线背景透上来 —— 纯色会把它整块盖死 */
+  background: var(--side-glass);
+  backdrop-filter: blur(20px) saturate(120%);
+  -webkit-backdrop-filter: blur(20px) saturate(120%);
+  border-right: 1px solid var(--line-soft);
+}
+
+.side-top {
+  padding: 10px 10px 4px;
+}
+
+.search {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.search svg {
+  position: absolute;
+  left: 9px;
+  width: 13px;
+  height: 13px;
+  color: var(--dim);
+  pointer-events: none;
+}
+
+.search input {
+  width: 100%;
+  padding: 7px 9px 7px 28px;
+  background: var(--surf);
+  border: 1px solid transparent;
+  border-radius: var(--r);
+  outline: none;
+  font: inherit;
+  color: inherit;
+  transition: border-color var(--t);
+}
+
+.search input::placeholder {
+  color: var(--dim);
+}
+
+.search input:focus {
+  border-color: var(--accent);
+}
+
+.side-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px 7px 10px;
+}
+
+/* 分组小标题 */
+.ahr {
+  font-size: 10px;
+  color: var(--dim);
+  padding: 12px 9px 4px;
+  letter-spacing: 0.05em;
+}
+
+/* 专辑行 */
+.arow {
+  display: grid;
+  grid-template-columns: 16px 1fr auto;
+  gap: 8px;
+  align-items: center;
+  padding: 7px 9px;
+  border-radius: var(--r-sm);
+  cursor: default;
+  transition: background var(--t);
+  user-select: none;
+}
+
+.arow:hover {
+  background: var(--hover);
+}
+
+.arow.on {
+  background: var(--sel);
+}
+
+.aglyph {
+  font-size: 11px;
+  color: var(--dim);
+  text-align: center;
+}
+
+.arow.on .aglyph {
+  color: var(--accent);
+}
+
+.aname {
+  font-size: 12.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.acount {
+  font-size: 10.5px;
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.aresult {
+  font-size: 11.5px;
+  color: var(--dim);
+  padding: 2px 9px 8px;
+}
+
+.side-foot {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  padding: 6px 8px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.side-foot .grow {
+  flex: 1;
+}
+
+.cd {
+  font-size: 10px;
+  color: var(--dim);
+  font-family: var(--mono);
+  padding-right: 2px;
+}
+/* ───────────── 主区 ───────────── */
+
+.main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  /* 纯色，不透背景。
+   *
+   * 表格是读数据的地方，背景有色彩流动会干扰阅读；而且切换专辑时
+   * 内容高度变了，光斑落点跟着挪，看起来像「背景变了」。
+   * 干脆实心：暗色纯黑，亮色纯白。光斑只留在左栏和锁屏。
+   */
+  background: var(--bg);
+}
+
+.tbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 13px 18px 9px;
+  flex: none;
+}
+
+.tbar-t {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.tbar-n {
+  font-size: 11px;
+  color: var(--dim);
+}
+
+.tbar .grow {
+  flex: 1;
+}
+
+/* 表格：用 grid 而不是 table，方便自定义列宽与吸顶表头 */
+.table {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 0 10px 24px;
+  /* 明确成块级：grid 子元素在滚动容器里需要确定宽度基准 */
+  display: block;
+}
+
+/*
+ * 关键：.tr 是 grid 容器，但它的父级 .table 是滚动容器。
+ * - `width: 100%` 让它撑满可见宽度；
+ * - `min-width` 保证列不被压扁，列多时由 .table 横向滚动；
+ * - `flex: none` 防止在 flex 上下文里被当作可收缩项。
+ */
+.table > .tr {
+  flex: none;
+  width: 100%;
+  min-width: 720px;
+}
+
+/*
+ * 列定义走 CSS 变量 --cols，由 JS 按当前可用列填进来。
+ * 必须带 fallback：变量缺失时退回到一个明确的六列定义，
+ * 否则 grid-template-columns 无效 —— 整行会塌成一列竖排。
+ */
+.tr {
+  display: grid;
+  grid-template-columns: var(
+    --cols,
+    minmax(150px, 1.4fr) 82px minmax(110px, 1fr) minmax(170px, 1.6fr) minmax(140px, 1.4fr) minmax(80px, 0.7fr) 40px
+  );
+  align-items: center;
+  gap: 10px;
+  padding: 0 8px;
+  border-radius: var(--r-sm);
+  min-height: 34px;
+  transition: background var(--t);
+}
+
+.tr.th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--bg);
+  font-size: 10.5px;
+  color: var(--dim);
+  letter-spacing: 0.03em;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  min-height: 30px;
+}
+
+.tr:not(.th):hover {
+  background: var(--hover);
+}
+
+.tr.sel {
+  background: var(--sel);
+}
+
+.td {
+  min-width: 0;
+  font-size: 12.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.td.strong {
+  font-weight: 550;
+}
+
+.td.dim {
+  color: var(--dim);
+}
+
+/* 密钥格子：悬停时才露出操作按钮，平时保持干净 */
+/* 密码单元格：明文占满整格，操作按钮浮在右侧。
+ *
+ * 之前 .secret-wrap 用 flex 把「明文 + 两个按钮」并排放，
+ * 结果按钮常年占据宽度、把明文挤成一小截，另一列的网址又贴过来，
+ * 视觉上乱成一团。改成绝对定位浮层后，明文可以用满整格，
+ * 按钮只在悬停时出现，不参与布局。 */
+.secret-wrap {
+  position: relative;
+  display: block;
+  overflow: hidden;
+}
+
+.secret-cell {
+  display: block;
+  width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  /* 悬停时右侧要给按钮留位置，否则文字会被盖住 */
+  padding-right: 0;
+  transition: padding-right var(--t);
+}
+
+.tr:hover .secret-cell {
+  padding-right: 42px;
+}
+
+.cellacts {
+  position: absolute;
+  top: 50%;
+  right: 0;
+  transform: translateY(-50%);
+  display: flex;
+  gap: 0;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--t);
+  /* 浮在文字上方，需要一点底色避免和文字叠在一起 */
+  background: linear-gradient(90deg, transparent, var(--bg) 28%);
+  padding-left: 10px;
+}
+
+.tr:hover .cellacts,
+.secret-wrap:focus-within .cellacts {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.secret-cell {
+  /* 打码态用等宽点 + 字距，读起来更像"被遮住的密码" */
+  letter-spacing: 0.14em;
+  color: var(--mid);
+  cursor: default;
+}
+
+.secret-cell.on {
+  letter-spacing: 0;
+  color: var(--fg);
+  user-select: all;
+}
+
+.cellacts {
+  display: flex;
+  gap: 0;
+  opacity: 0;
+  transition: opacity var(--t);
+  flex: none;
+}
+
+.tr:hover .cellacts,
+.secret-wrap:focus-within .cellacts {
+  opacity: 1;
+}
+
+.tacts {
+  display: flex;
+  gap: 0;
+  justify-content: flex-end;
+  opacity: 0;
+  transition: opacity var(--t);
+}
+
+.tr:hover .tacts {
+  opacity: 1;
+}
+
+.tags {
+  display: flex;
+  gap: 4px;
+  overflow: hidden;
+}
+
+.tag {
+  font-size: 10px;
+  color: var(--mid);
+  background: var(--surf);
+  border-radius: 20px;
+  padding: 1px 7px;
+  white-space: nowrap;
+  flex: none;
+}
+
+.tempty {
+  flex: 1;
+  display: grid;
+  place-items: center;
+  text-align: center;
+  color: var(--dim);
+  font-size: 12.5px;
+  gap: 12px;
+  align-content: center;
+}
+
+/* ───────────── 浮层 ───────────── */
+
+.scrim {
+  position: fixed;
+  inset: 0;
+  background: color-mix(in srgb, #000 42%, transparent);
+  backdrop-filter: blur(5px);
+  display: grid;
+  place-items: center;
+  z-index: 90;
+  animation: fade var(--t) ease;
+}
+
+@keyframes fade {
+  from {
+    opacity: 0;
+  }
+}
+
+.panel {
+  width: 470px;
+  max-height: 84vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--surf);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+}
+
+@keyframes pop {
+  from {
+    transform: translateY(7px) scale(0.99);
+    opacity: 0;
+  }
+}
+
+.phead {
+  padding: 16px 20px 10px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.pbody {
+  padding: 2px 20px 6px;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+}
+
+.pfoot {
+  padding: 10px 20px 15px;
+  display: flex;
+  gap: 7px;
+  justify-content: flex-end;
+  flex: none;
+}
+
+/* 设置行 */
+.srow-set {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 11px 0;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.srow-set:last-child {
+  border-bottom: none;
+}
+
+.slabel {
+  font-size: 12.5px;
+}
+
+.shint {
+  font-size: 10.5px;
+  color: var(--dim);
+  margin-top: 2px;
+}
+
+.seg {
+  display: inline-flex;
+  background: var(--hover);
+  border-radius: var(--r);
+  padding: 2px;
+  gap: 2px;
+  flex: none;
+}
+
+.seg button {
+  padding: 4px 10px;
+  border-radius: var(--r-sm);
+  font-size: 11.5px;
+  color: var(--dim);
+  transition: background var(--t), color var(--t);
+}
+
+.seg button.on {
+  background: var(--surf);
+  color: var(--fg);
+  font-weight: 550;
+}
+
+/* 标签 / 字段编辑 */
+.tag-edit {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  align-items: center;
+  padding: 6px 8px;
+  background: var(--surf);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  min-height: 36px;
+}
+
+.tag-edit input {
+  flex: 1;
+  min-width: 70px;
+  background: none;
+  border: none;
+  outline: none;
+  font: inherit;
+  font-size: 12px;
+  color: inherit;
+}
+
+.tagx {
+  cursor: pointer;
+}
+
+.tagx:hover {
+  color: var(--danger);
+}
+
+.field-edit {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto auto;
+  gap: 6px;
+  align-items: center;
+  margin-bottom: 6px;
+}
+
+.field-edit input[type="text"] {
+  padding: 6px 9px;
+  background: var(--surf);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  outline: none;
+  font: inherit;
+  font-size: 12px;
+  color: inherit;
+}
+
+.field-edit input[type="text"]:focus {
+  border-color: var(--accent);
+}
+
+.chk {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--dim);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+/* ── 专辑：整行列表 ── */
+
+.album-list {
+  margin-top: 8px;
+  max-height: 168px;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  padding: 4px;
+  background: var(--surf);
+}
+
+.album-row {
+  display: grid;
+  grid-template-columns: 18px 1fr auto;
+  gap: 10px;
+  align-items: center;
+  width: 100%;
+  padding: 9px 10px;
+  border-radius: var(--r-sm);
+  font-size: 13px;
+  color: var(--mid);
+  text-align: left;
+  transition: background var(--t), color var(--t);
+}
+
+.album-row:hover {
+  background: var(--hover);
+  color: var(--fg);
+}
+
+.album-row.on {
+  background: var(--accent-soft);
+  color: var(--fg);
+}
+
+/* 勾选框：未选时是空心方框，选中后填色打勾 */
+.album-check {
+  width: 16px;
+  height: 16px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  color: transparent;
+  line-height: 1;
+  flex: none;
+}
+
+.album-check.on {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+
+.album-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.album-n {
+  font-size: 10.5px;
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 本地 0 条的浏览器：灰显，不可选，但让用户知道它被检测到了 */
+.album-row.off {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.album-row.off:hover {
+  background: none;
+  color: var(--mid);
+}
+
+.album-why {
+  display: block;
+  font-size: 10.5px;
+  color: var(--dim);
+  margin-top: 2px;
+  white-space: normal;
+}
+
+/* 手动导出指引：给被 v20 拦下的浏览器用 */
+.import-tip {
+  margin-top: 12px;
+  padding: 11px 13px;
+  border-radius: var(--r);
+  background: var(--surface-hi);
+  border-left: 2px solid var(--accent);
+}
+
+.import-tip-t {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--fg);
+  margin-bottom: 4px;
+}
+
+.import-tip-b {
+  font-size: 11.5px;
+  color: var(--mid);
+  line-height: 1.6;
+}
+
+.album-empty,
+.album-tip {
+  padding: 9px 10px;
+  font-size: 11.5px;
+  color: var(--dim);
+}
+/* ───────────── Toast ───────────── */
+
+.toasts {
+  position: fixed;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  align-items: center;
+  z-index: 200;
+  pointer-events: none;
+}
+
+.toast {
+  padding: 8px 14px;
+  border-radius: var(--r);
+  background: var(--surf);
+  box-shadow: var(--shadow);
+  font-size: 12px;
+  animation: tin 0.15s ease;
+  max-width: 500px;
+}
+
+.toast .sub {
+  font-size: 10.5px;
+  color: var(--dim);
+  margin-top: 1px;
+}
+
+@keyframes tin {
+  from {
+    transform: translateY(7px);
+    opacity: 0;
+  }
+}
+
+/* ───────────── 光斑背景 ─────────────
+ *
+ * 三层超大径向渐变各自平移，叠出有体积的流动。
+ * 只改 transform（合成层），不动 layout。
+ */
+
+.flow {
+  position: fixed;
+  /* 用视口单位而不是 inset，尺寸只跟窗口大小有关。
+   *
+   * `inset: -25%` 的百分比是按包含块算的，而包含块会随布局变化 ——
+   * 切专辑时右侧内容从「5 条」变成「0 条」，滚动条消失、宽度变了几像素，
+   * 背景层的实际渲染尺寸就跟着变，径向渐变的落点整体挪位。
+   * 用户看到的就是「点一下专辑，背景颜色变了」。
+   * 改成 vw/vh 之后，背景只跟窗口尺寸绑定，内容怎么变都不动。
+   */
+  left: -25vw;
+  top: -25vh;
+  width: 150vw;
+  height: 150vh;
+  z-index: 0;
+  pointer-events: none;
+  overflow: hidden;
+  opacity: var(--flow-opacity);
+}
+
+.flow > i {
+  position: absolute;
+  inset: 0;
+  display: block;
+  will-change: transform;
+  background-repeat: no-repeat;
+}
+
+.flow > i:nth-child(1) {
+  background: radial-gradient(
+    46% 42% at 20% 28%,
+    var(--flow-a) 0%,
+    transparent 64%
+  );
+  animation: flow-a 26s ease-in-out infinite alternate;
+}
+
+.flow > i:nth-child(2) {
+  background: radial-gradient(
+    44% 40% at 76% 64%,
+    var(--flow-b) 0%,
+    transparent 62%
+  );
+  animation: flow-b 32s ease-in-out infinite alternate;
+}
+
+.flow > i:nth-child(3) {
+  background: radial-gradient(
+    32% 68% at 52% 48%,
+    var(--flow-c) 0%,
+    transparent 66%
+  );
+  animation: flow-c 19s ease-in-out infinite alternate;
+}
+
+@keyframes flow-a {
+  from {
+    transform: translate3d(-4%, -2%, 0) scale(1.05);
+  }
+  to {
+    transform: translate3d(6%, 5%, 0) scale(1.18);
+  }
+}
+
+@keyframes flow-b {
+  from {
+    transform: translate3d(5%, 4%, 0) scale(1.12);
+  }
+  to {
+    transform: translate3d(-6%, -3%, 0) scale(1);
+  }
+}
+
+@keyframes flow-c {
+  from {
+    transform: translate3d(0, 3%, 0) scale(1.1) rotate(-2deg);
+  }
+  to {
+    transform: translate3d(-3%, -5%, 0) scale(1.24) rotate(2deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .flow > i {
+    animation: none;
+  }
+}
+/* ───────────── 入场：一个整体，不是一堆碎片 ─────────────
+ *
+ * 关键差别（对照华为/材料设计的做法）：
+ *   1. 所有元素共用同一条弹簧曲线，节奏一致；
+ *   2. 位移幅度统一压小（6px），只靠「清晰度 + 透明度」区分层次 ——
+ *      大幅度移动是大屏汇报 PPT 的做法，桌面软件里会显得飘；
+ *   3. 元素之间用 --d1..--d4 四档错开，形成"接力"而不是"齐飞"。
+ */
+
+@keyframes settle {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 6px, 0);
+    filter: blur(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+    filter: none;
+  }
+}
+
+/* 只淡入，不带位移。用于大面积容器（背景层、遮罩） */
+@keyframes unveil {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* 从左滑入，幅度也压小。用于侧栏 */
+@keyframes settleLeft {
+  from {
+    opacity: 0;
+    transform: translate3d(-8px, 0, 0);
+    filter: blur(5px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+    filter: none;
+  }
+}
+
+/* 弹窗：从 92% 弹到 100%，带一点过冲 */
+@keyframes bloom {
+  from {
+    opacity: 0;
+    transform: scale(0.92);
+    filter: blur(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+    filter: none;
+  }
+}
+
+/* ───────────── 锁屏：一个整体浮起 ─────────────
+ *
+ * 不用「每行各飞各的」——那样像元素在拼装。
+ * 锁屏整块作为一个容器升起，内部元素只做极轻微的依次显现，
+ * 视觉上读作「一块东西浮上来了」，而不是「五块东西陆续到位」。
+ */
+
+.lock-inner {
+  animation: settle 620ms var(--ease-out) both;
+}
+
+
+.lock-name {
+  animation: unveil 520ms var(--ease-out) var(--d1) both;
+}
+
+.lock-sub {
+  animation: unveil 520ms var(--ease-out) var(--d2) both;
+}
+
+.lock-input {
+  animation: unveil 560ms var(--ease-out) var(--d2) both;
+}
+
+.lock-go {
+  animation: unveil 560ms var(--ease-out) var(--d3) both;
+}
+
+.lock-foot,
+.chk-skip {
+  animation: unveil 560ms var(--ease-out) var(--d4) both;
+}
+
+.lock-msg {
+  animation: unveil 300ms var(--ease-std) both;
+}
+
+/* ───────────── 主界面：左栏先定，内容随后 ───────────── */
+
+.side {
+  animation: settleLeft 480ms var(--ease-out) 60ms both;
+}
+
+.main {
+  animation: unveil 420ms var(--ease-out) var(--d2) both;
+}
+
+/* 表格行：紧跟着整体，只做极轻的淡入 + 1px 上浮，
+   避免"每行都在动"的杂乱感 */
+.tr {
+  animation: settle 380ms var(--ease-out) both;
+}
+
+/* 前几行错开，后面的共用同一延迟 —— 避免长列表末尾延迟过长 */
+.tr:nth-child(1) { animation-delay: 180ms; }
+.tr:nth-child(2) { animation-delay: 210ms; }
+.tr:nth-child(3) { animation-delay: 240ms; }
+.tr:nth-child(4) { animation-delay: 265ms; }
+.tr:nth-child(5) { animation-delay: 290ms; }
+.tr:nth-child(n + 6) { animation-delay: 310ms; }
+
+/* 工具条与标题：和内容同步，不分先后 */
+.tbar {
+  animation: settle 420ms var(--ease-out) 120ms both;
+}
+
+/* ───────────── 交互反馈：统一走弹簧 ───────────── */
+
+.btn,
+.ib,
+.tag,
+.album-row,
+.srow-set {
+  transition:
+    background var(--t),
+    color var(--t),
+    border-color var(--t),
+    transform 220ms var(--spring);
+}
+
+/* 按下时轻微下沉，松手弹回 —— 给物理触感 */
+.btn:active,
+.ib:active {
+  transform: scale(0.96);
+}
+
+.album-row:active {
+  transform: scale(0.985);
+}
+
+/* 悬停时轻微抬起，和按下形成对比 */
+.album-row:hover {
+  transform: translate3d(0, -1px, 0);
+}
+
+/* ───────────── 弹窗 ───────────── */
+
+.panel {
+  animation: bloom 340ms var(--spring) both;
+}
+
+.scrim {
+  animation: unveil 220ms var(--ease-out) both;
+}
+
+/* ───────────── 无障碍：尊重系统设置 ───────────── */
+
+@media (prefers-reduced-motion: reduce) {
+  .flow > i,
+  .lock-inner,
+  .lock-name,
+  .lock-sub,
+  .lock-input,
+  .lock-go,
+  .lock-foot,
+  .chk-skip,
+  .side,
+  .main,
+  .tr,
+  .tbar,
+  .panel,
+  .scrim {
+    animation: none;
+  }
+
+  .btn:active,
+  .ib:active,
+  .album-row:active,
+  .album-row:hover {
+    transform: none;
+  }
+}
+/* ───────────── 已入场：只保留元素自身的过渡，不再播开场 ─────────────
+ *
+ * 切专辑、搜索、删条目、复制后刷新都会重建表格 —— 这些都是"同一个界面
+ * 里换了内容"，不是"进入应用"。如果每次都重播入场，用户看到的是一遍遍
+ * 开场动画，非常廉价。entered 类由 renderMain 在首帧之后加上。
+ */
+
+.shell.entered .side,
+.shell.entered .main,
+.shell.entered .tbar,
+.shell.entered .tr {
+  animation: none;
+}
+
+/* 重建时的行仍然保留极轻的淡入，避免内容"啪"地换掉；
+   幅度压到用户几乎注意不到的程度。 */
+.shell.entered .tr {
+  animation: unveil 140ms var(--ease-std) both;
+}
+
+.shell.entered .tr:nth-child(n) {
+  animation-delay: 0ms;
+}
+/* ───────────── 关于我们 ───────────── */
+
+.about-head {
+  text-align: center;
+  padding: 6px 0 18px;
+}
+
+.about-name {
+  font-size: 19px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--fg);
+}
+
+.about-sub {
+  margin-top: 3px;
+  font-size: 12px;
+  color: var(--faint, var(--dim));
+}
+
+.about-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  border-radius: var(--r);
+  overflow: hidden;
+  background: var(--line-soft);
+  margin-bottom: 20px;
+}
+
+.about-kv {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 9px 12px;
+  background: var(--surf);
+  font-size: 12.5px;
+}
+
+.about-k {
+  color: var(--dim);
+}
+
+.about-v {
+  color: var(--mid);
+  text-align: right;
+}
+
+.about-h {
+  margin: 16px 0 7px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg);
+  letter-spacing: 0.02em;
+}
+
+.about-h:first-of-type {
+  margin-top: 4px;
+}
+
+.about-p {
+  margin: 0 0 9px;
+  font-size: 12.5px;
+  line-height: 1.75;
+  color: var(--mid);
+}
+
+.about-p.strong {
+  color: var(--fg);
+  padding: 10px 12px;
+  border-radius: var(--r);
+  background: var(--accent-soft);
+  border-left: 2px solid var(--accent);
+}
+
+.about-foot {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line-soft);
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  font-size: 11.5px;
+  color: var(--dim);
+}
+
+.about-dot {
+  opacity: 0.5;
+}
+/* ───────────── 建库进度 ─────────────
+ *
+ * 用文字而不是转圈：转圈只说「在等」，文字能说「在建什么」。
+ * 每次换一条文案时淡入一下，让眼睛有事可做。
+ */
+
+.lock-progress {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.progress-text {
+  font-size: 13px;
+  color: var(--mid);
+  letter-spacing: 0.01em;
+  animation: progressIn 420ms var(--ease-out) both;
+}
+
+@keyframes progressIn {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+    filter: blur(3px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+    filter: none;
+  }
+}
+
+/* 文案左侧一条极细的流动指示，说明它还在动 */
+.lock-progress::before {
+  content: "";
+  width: 26px;
+  height: 2px;
+  border-radius: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    var(--accent),
+    transparent
+  );
+  background-size: 200% 100%;
+  animation: progressSweep 1.4s linear infinite;
+}
+
+@keyframes progressSweep {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .progress-text,
+  .lock-progress::before {
+    animation: none;
+  }
+}

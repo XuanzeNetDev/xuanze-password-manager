@@ -1,0 +1,16 @@
+[package]
+name = "xz-bench"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "璇泽密钥库性能基准"
+
+[[bin]]
+name = "xz-bench"
+path = "src/main.rs"
+
+[dependencies]
+xz-core = { workspace = true }

@@ -1,0 +1,9 @@
+# 统一换行符，避免 Windows 提交后别人 clone 下来整个文件都"改了"
+* text=auto eol=lf
+
+# 二进制文件不参与换行符转换
+*.png binary
+*.ico binary
+*.icns binary
+*.xzvlt binary
+*.lock binary

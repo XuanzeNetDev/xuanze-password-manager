@@ -1,0 +1,31 @@
+[package]
+name = "xz-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "璇泽密钥库核心：vault 格式、加密、KDF、索引、内存擦除"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+zeroize = { workspace = true }
+argon2 = { workspace = true }
+aes-gcm = { workspace = true }
+hkdf = { workspace = true }
+sha2 = { workspace = true }
+getrandom = { workspace = true }
+subtle = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Security_Cryptography",
+    "Win32_Storage_FileSystem",
+] }
+[features]
+default = []
+
+[dev-dependencies]

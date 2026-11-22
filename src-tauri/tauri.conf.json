@@ -1,0 +1,59 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "璇泽密钥库",
+  "version": "1.0.0",
+  "identifier": "cn.wordpeak.xuanze.vault",
+  "build": {
+    "frontendDist": "../dist",
+    "beforeDevCommand": "pnpm run dev:web",
+    "devUrl": "http://localhost:5183"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "璇泽科技 · 璇泽密钥库",
+        "width": 1180,
+        "height": 760,
+        "minWidth": 880,
+        "minHeight": 560,
+        "center": true,
+        "decorations": true,
+        "transparent": false,
+        "dragDropEnabled": false,
+        "resizable": true,
+        "maximizable": true,
+        "fullscreen": false,
+        "visible": false,
+        "backgroundColor": "#0f1115"
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' data: asset: http://asset.localhost; style-src 'self' 'sha256-yLznDQjA2FT7aO0JmiSPfz05A20gXkJT4B3zbIv2pME='; script-src 'self'; connect-src 'self' ipc: http://ipc.localhost; base-uri 'none'; form-action 'none'; object-src 'none'; frame-ancestors 'none'",
+      "dangerousDisableAssetCspModification": false
+    }
+  },
+  "bundle": {
+    "active": true,
+    "publisher": "璇泽网络科技",
+    "copyright": "Copyright © 2026 璇泽网络科技",
+    "shortDescription": "璇泽密钥库",
+    "longDescription": "璇泽网络科技出品的本地密码管理器。数据仅存本机，不联网。",
+    "targets": ["nsis"],
+    "icon": [
+        "icons/32x32.png",
+        "icons/128x128.png",
+        "icons/128x128@2x.png",
+        "icons/icon.icns",
+        "icons/icon.ico",
+        "icons/icon.png"
+      ],
+    "resources": [],
+    "windows": {
+      "nsis": {
+        "languages": ["SimpChinese", "English", "Japanese"],
+        "installerIcon": "icons/icon.ico"
+      }
+    }
+  }
+}

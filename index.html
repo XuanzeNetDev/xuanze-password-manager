@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark light" />
+    <title>璇泽密钥库</title>
+    <!--
+      启动底色。**必须内联**，不能放进外部样式表。
+
+      原因：CSS 是外链的，浏览器要等它下载+解析完才应用。在那之前
+      body 用的是浏览器默认白底 —— 冷启动时先白屏半秒，很刺眼。
+
+      这里只设背景色，**不画任何图形**。
+      早先放过一个蓝色方块当加载指示，但它在真实界面上来之前一直留在屏幕
+      正中，看起来像个不该出现的东西。宁可什么都不显示，只留一块干净的底色。
+
+      内联样式受 CSP 约束，所以配一条 sha256 hash（见 tauri.conf.json），
+      而不是退回 `unsafe-inline`。
+    -->
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: #0f1115;
+        color: #e8eaee;
+        overflow: hidden;
+        font-family:
+          "Inter", "Segoe UI Variable", "Segoe UI", "PingFang SC",
+          "Microsoft YaHei UI", "Noto Sans CJK SC", system-ui, sans-serif;
+        -webkit-font-smoothing: antialiased;
+      }
+      @media (prefers-color-scheme: light) {
+        html,
+        body {
+          background: #fbfbfc;
+          color: #1c1f26;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

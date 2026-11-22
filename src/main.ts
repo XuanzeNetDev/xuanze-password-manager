@@ -331,7 +331,7 @@ function renderRegister(): void {
 
         msgEl,
         go,
-        h("div", { class: "lock-foot" }, h("span", { class: "lock-note" }, "密码不会上传，只存在这台电脑上。忘记密码只能靠导出的 Excel 恢复数据，建议尽早导出一次。")),
+        h("div", { class: "lock-foot" }, h("span", { class: "lock-note" }, "密码不会上传，只存在这台电脑上。忘了密码只能靠导出的备份恢复，建议尽早导出一次。")),
       ),
     ),
     toasts,
@@ -1218,7 +1218,7 @@ function openRekey(): void {
       newPw,
       again,
       msg,
-      h("div", { class: "shint" }, "密码不会上传。改完之后旧密码立即失效；忘记密码时，数据只能靠导出的 Excel 恢复。"),
+      h("div", { class: "shint" }, "密码不会上传。改完之后旧密码立即失效；忘了密码，数据只能靠导出的备份恢复。"),
     ],
     [cancel, go],
   );

@@ -661,57 +661,6 @@ impl Vault {
         }
     }
 
-    pub fn reseal_with_password(&self, new_password: &str, pepper: &[u8]) -> Result<Vec<u8>> {
-        let salt = kdf::random_salt();
-        let key = if pepper.is_empty() {
-            kdf::derive_master_key(new_password.as_bytes(), &salt, self.kdf)?
-        } else {
-            crate::binding::derive_bound_key(new_password.as_bytes(), pepper, &salt, self.kdf)?
-        };
-
-        let header = FileHeader {
-            version: if self.binding.is_some() {
-                crate::FORMAT_VERSION.max(3)
-            } else {
-                self.format_version.min(crate::FORMAT_VERSION)
-            },
-            kdf: self.kdf,
-            salt,
-            vault_id: self.vault_id,
-        }
-        .to_bytes();
-
-        let entries: Vec<Entry> = self.entries.values().cloned().collect();
-        let body_plain = zeroize::Zeroizing::new(
-            serde_json::to_vec(&Body { entries }).map_err(|_| Error::Corrupt("正文序列化失败"))?,
-        );
-        let body_key = crypto::derive_subkey(&key, KeyPurpose::Payload)?;
-        let body_blob = crypto::seal(&body_key, &header, &body_plain)?;
-
-        let items: Vec<IndexItem> = self.index.all_sorted().into_iter().cloned().collect();
-        let idx_plain = zeroize::Zeroizing::new(
-            serde_json::to_vec(&IndexPayload { items })
-                .map_err(|_| Error::Corrupt("索引序列化失败"))?,
-        );
-        let idx_key = crypto::derive_subkey(&key, KeyPurpose::Index)?;
-        let idx_blob = crypto::seal(&idx_key, &header, &idx_plain)?;
-
-        let verify = codec::make_verify_block(&key, &header)?;
-        let bind_blob = match &self.binding {
-            Some(b) => Some(crate::binding::wrap_binding_secret(
-                &b.hardware_fp,
-                b.secret.as_slice(),
-            )?),
-            None => None,
-        };
-        Ok(codec::assemble(
-            &header,
-            bind_blob.as_deref(),
-            &idx_blob,
-            &body_blob,
-            &verify,
-        ))
-    }
 
     /// 主动锁定：擦除密钥、擦除全部条目明文。之后这个 `Vault` 只剩个空壳。
     ///
@@ -759,8 +708,14 @@ pub struct VaultSnapshot {
 
 /// 用新密码把快照重新封装成完整文件字节。
 ///
-/// 这是 `Vault::reseal_with_password` 的自由函数版本 ——
-/// 不需要持有 `Vault`，因此可以在锁外调用。
+/// 用新密码把快照重新封装成完整文件字节。
+///
+/// 不需要持有 `Vault`，因此可以在锁外调用 —— 改密码要跑两轮 Argon2，
+/// 全程持锁会把界面冻住。
+///
+/// 早先这里还有一个 `Vault::reseal_with_password` 的「方法版本」，逻辑几乎
+/// 一样但版本判定不同，只有一处被调用。两个函数做同一件事、行为还能不一样，
+/// 是那种「现在不出事，等哪天有人调错」的隐患，已经删掉。
 pub fn reseal_snapshot(snap: &VaultSnapshot, new_password: &str, pepper: &[u8]) -> Result<Vec<u8>> {
     let salt = kdf::random_salt();
     // pepper 规则必须和「这个库是怎么建的」一致，而不是由调用方随手给一个。

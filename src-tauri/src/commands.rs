@@ -325,7 +325,7 @@ pub async fn vault_create(
     state: State<'_, AppState>,
     password: String,
     level: Option<String>,
-) -> Result<(), String> {
+) -> Result<CreateResult, String> {
     // 为什么是 async：
     //
     // Tauri 的**同步**命令在主线程（UI 那个线程）上执行。建库要跑
@@ -334,33 +334,56 @@ pub async fn vault_create(
     // 所以这里必须 async + spawn_blocking，把重活挪到线程池。
     let params = kdf_from(level.as_deref());
 
-    let vault = tauri::async_runtime::spawn_blocking(move || -> Result<_, String> {
-        let vault = match crate::machine::hardware_fingerprint() {
-            Some(fp) => {
-                // v3：本机随机串封进文件，重装系统也能开
-                let binding_secret: [u8; xz_core::binding::BINDING_SECRET_LEN] =
-                    xz_core::kdf::random_bytes();
-                xz_core::vault::Vault::create_bound_v3(&password, params, &binding_secret, fp)
-                    .map_err(err)?
-            }
-            None => {
-                // 读不到硬件指纹：退回 v2 规则（绑机器名 + 卷序列号）。
-                // 脆，但总比不让用强。
-                let pepper = crate::machine::pepper()?;
-                xz_core::vault::Vault::create_bound(&password, params, &pepper).map_err(err)?
-            }
-        };
-        // 登记：这个库从此归本机所有，别的 .xzvlt 进不来
-        crate::machine::register_vault(&vault.vault_id())?;
-        Ok(vault)
-    })
-    .await
-    .map_err(|e| format!("建库任务失败：{e}"))??;
+    let (vault, hardware_bound) =
+        tauri::async_runtime::spawn_blocking(move || -> Result<_, String> {
+            let (vault, bound) = match crate::machine::hardware_fingerprint() {
+                Some(fp) => {
+                    // v3：本机随机串封进文件，重装系统也能开
+                    let binding_secret: [u8; xz_core::binding::BINDING_SECRET_LEN] =
+                        xz_core::kdf::random_bytes();
+                    let v = xz_core::vault::Vault::create_bound_v3(
+                        &password,
+                        params,
+                        &binding_secret,
+                        fp,
+                    )
+                    .map_err(err)?;
+                    (v, true)
+                }
+                None => {
+                    // 读不到硬件指纹：退回 v2 规则（绑机器名 + 卷序列号）。
+                    //
+                    // 这条路是脆的：改个计算机名、重装一次系统就打不开。
+                    // 但它只在极老的机器和部分虚拟机上会走到，所以不能因为
+                    // 读不到指纹就不让人建库。**但必须告诉用户** ——
+                    // 静默降级等于把「重装即失联」这个后果瞒着人家。
+                    let pepper = crate::machine::pepper()?;
+                    let v = xz_core::vault::Vault::create_bound(&password, params, &pepper)
+                        .map_err(err)?;
+                    (v, false)
+                }
+            };
+            // 登记：这个库从此归本机所有，别的 .xzvlt 进不来
+            crate::machine::register_vault(&vault.vault_id())?;
+            Ok((vault, bound))
+        })
+        .await
+        .map_err(|e| format!("建库任务失败：{e}"))??;
 
     // 加锁只在装配这几十微秒内发生，不跨 await
     let mut guard = state.session.lock().map_err(err)?;
     guard.adopt(vault);
-    Ok(())
+    Ok(CreateResult { hardware_bound })
+}
+
+/// 建库结果。
+#[derive(Debug, serde::Serialize)]
+pub struct CreateResult {
+    /// 是否用上了 v3 绑定（读得到主板 SMBIOS UUID）。
+    ///
+    /// `false` 意味着退回了 v2 规则：那种库**改计算机名或重装系统就打不开**。
+    /// 前端必须把这件事明确告诉用户，不能当没事发生。
+    hardware_bound: bool,
 }
 
 /// 打开库。
@@ -409,16 +432,26 @@ pub async fn vault_open(
     // 只有这台机器、这个 Windows 账户能解开这份封存。
     if crate::machine::auto_unlock_enabled() {
         if let Some(key) = crate::machine::load_auto_unlock(&id) {
-            if key.len() == 32 {
-                // 拿它试一次校验块：密码改过、库换过就自然失效，退回要密码
-                if let Ok(()) = xz_core::codec::check_verify_block(
+            if key.len() == 32
+                && xz_core::codec::check_verify_block(
                     &key,
                     &header.to_bytes(),
                     xz_core::codec::split_sealed(&bytes).map_err(err)?.verify,
-                ) {
-                    let mut guard = state.session.lock().map_err(err)?;
-                    return guard.install(&path, &bytes, key).map_err(err);
+                )
+                .is_ok()
+            {
+                // 绑定材料必须一起解出来。v3 库少了它，这个会话一旦保存就会报
+                // 「v3 格式但缺绑定材料」—— 用户改完条目存不进去，而且提示
+                // 会指向一个他看不懂的内部错误。
+                let material = v3_binding_material(&bytes, &header)?;
+                let mut guard = state.session.lock().map_err(err)?;
+                guard.install(&path, &bytes, key).map_err(err)?;
+                if let Some((secret, fp)) = material {
+                    if let Some(u) = guard.un() {
+                        u.vault.adopt_binding(secret, fp);
+                    }
                 }
+                return Ok(());
             }
         }
     }
@@ -464,6 +497,32 @@ struct BindingInfo {
     material: Option<(xz_core::secure::SecretBytes, Vec<u8>)>,
 }
 
+/// v3 库：从文件里的绑定块解出本机随机串。v2 库返回 `None`。
+///
+/// 单独抽出来是因为有两条路径要用它：正常开库（`binding_for`）
+/// 和免密码模式的快路径。快路径以前漏了这一步，打开是能打开，
+/// 但那个会话保存时会失败。
+fn v3_binding_material(
+    bytes: &[u8],
+    header: &xz_core::codec::FileHeader,
+) -> Result<Option<(xz_core::secure::SecretBytes, Vec<u8>)>, String> {
+    if header.version < 3 {
+        return Ok(None);
+    }
+    let fp = crate::machine::hardware_fingerprint().ok_or(
+        "这台机器读不到硬件标识（SMBIOS），无法解开发它的密钥库。\n\n\
+         这个库是在一台能读到硬件标识的机器上创建的，请在原机器上打开。",
+    )?;
+    let parts = xz_core::codec::split_sealed(bytes).map_err(err)?;
+    let blob = parts.bind.ok_or("库文件缺少绑定块，文件可能损坏")?;
+    let secret = xz_core::binding::unwrap_binding_secret(&fp, blob).map_err(|_| {
+        "这个库绑定的不是当前设备（换过主板或系统盘？），无法打开。\n\n\
+         库文件本身没有问题 —— 是「设备绑定」在起作用。"
+            .to_owned()
+    })?;
+    Ok(Some((secret, fp)))
+}
+
 /// 按文件版本算出 pepper，并顺带带回 v3 的绑定材料。
 ///
 /// v3 这条路径是「重装系统还能打开」的全部实现：绑定块在文件里，
@@ -476,22 +535,12 @@ fn binding_for(bytes: &[u8], header: &xz_core::codec::FileHeader) -> Result<Bind
             material: None,
         });
     }
-
-    let fp = crate::machine::hardware_fingerprint().ok_or(
-        "这台机器读不到硬件标识（SMBIOS），无法解开发它的密钥库。\n\n\
-         这个库是在一台能读到硬件标识的机器上创建的，请在原机器上打开。",
-    )?;
-    let parts = xz_core::codec::split_sealed(bytes).map_err(err)?;
-    let blob = parts.bind.ok_or("库文件缺少绑定块，文件可能损坏")?;
-    let secret = xz_core::binding::unwrap_binding_secret(&fp, blob).map_err(|_| {
-        "这个库绑定的不是当前设备（换过主板或系统盘？），无法打开。\n\n\
-         库文件本身没有问题 —— 是「设备绑定」在起作用。"
-            .to_owned()
-    })?;
-    let pepper = xz_core::binding::make_pepper_v3(secret.as_slice());
+    let material = v3_binding_material(bytes, header)?
+        .ok_or("这个库标记为 v3 格式，但没有绑定块")?;
+    let pepper = xz_core::binding::make_pepper_v3(material.0.as_slice());
     Ok(BindingInfo {
         pepper,
-        material: Some((secret, fp)),
+        material: Some(material),
     })
 }
 

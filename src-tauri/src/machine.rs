@@ -506,9 +506,15 @@ fn restrict_acl(path: &std::path::Path) -> bool {
         .arg(path)
         .arg("/inheritance:r")
         .arg("/grant:r")
-        // SID 形如 S-1-5-21-...，只含数字与连字符，不含空格和引号，
-        // 不会有命令行解析问题。
-        .arg(format!("{sid}:F"))
+        // 这里用 SID 而不是账户名，**而且必须带 `*` 前缀**。
+        //
+        // `icacls` 的规则是：`/grant:r` 后面给的是账户名时直接查名字；
+        // 要给 SID 就得写成 `*S-1-5-21-...`。少了这个星号，icacls 会把
+        // 整串 `S-1-5-...:F` 当成一个账户名去查，报
+        // "No mapping between account names and security IDs"，
+        // 退出码 1332 —— 也就是这条命令**从写下来那天起就一直在失败**。
+        // 失败是静默的（输出被丢进 null），所以一直没人发现。
+        .arg(format!("*{sid}:F"))
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status()

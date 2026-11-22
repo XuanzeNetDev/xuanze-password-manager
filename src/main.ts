@@ -288,13 +288,22 @@ function renderRegister(): void {
       // 对日常使用没必要。256 MiB 已经让 GPU 破解很不划算，
       // 而内存峰值降到四分之一，老一点的轻薄本也能顺畅跑。
       // 强密码 + 本机绑定才是主要防线，KDF 只是最后一道。
-      await api.create(p1.value, "paranoid");
+      const created = await api.create(p1.value, "paranoid");
       window.clearInterval(timer);
       stepEl.textContent = steps[steps.length - 1] ?? "";
 
       // 库文件位置由后端决定（固定默认位置），前端只负责记下来显示用。
       state.vaultPath = await api.defaultVaultPath();
       await api.save();
+
+      if (!created.hardware_bound) {
+        // 这台机器读不到 SMBIOS UUID，库退回了「绑机器名 + 卷序列号」的
+        // 老规则。那种规则下改计算机名、重装系统都会打不开 —— 必须现在说。
+        toast(
+          "注意：这台机器读不到硬件标识",
+          "库用的是较脆的绑定方式，改计算机名或重装系统会导致打不开。请定期导出备份。",
+        );
+      }
 
       await enter();
     } catch (e) {
@@ -1231,16 +1240,25 @@ function openRekey(): void {
  * 任何一步不成立就返回 false，交给调用方显示锁屏 —— 不要在这里报错，
  * 用户根本没主动做什么，弹一条错误只会莫名其妙。
  */
-async function tryAutoUnlock(): Promise<boolean> {
-  if (!("__TAURI_INTERNALS__" in window)) return false;
+/**
+ * 启动时尝试免密码进入。
+ *
+ * 只有「免密码模式已开启」且「本机封存的主密钥还能解开这个库」时才成功。
+ *
+ * 失败时把原因带回去，别吞掉。以前这里 `catch { return false; }`，
+ * 用户看到的就是「设置里明明写着已开启，可每次还是要输密码」，
+ * 而且没有任何线索说明为什么 —— 一个安全选项静默失效，比它没做还糟。
+ */
+async function tryAutoUnlock(): Promise<{ ok: true } | { ok: false; error: string }> {
+  if (!("__TAURI_INTERNALS__" in window)) return { ok: false, error: "" };
+  const on = await api.autoUnlockStatus().catch(() => false);
+  if (!on) return { ok: false, error: "" };
   try {
-    if (!(await api.autoUnlockStatus())) return false;
-    // 密码传空串：后端看到免密码模式开启会优先用封存的密钥，
-    // 只有那一步失败（比如换过密码）才需要真密码。
+    // 密码传空串：后端看到免密码模式开启会优先用封存的密钥。
     await api.open("");
-    return true;
-  } catch {
-    return false;
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: errText(e) };
   }
 }
 
@@ -1980,10 +1998,17 @@ async function boot(): Promise<void> {
       const st = await api.status();
       if (st.unlocked) {
         await enter();
-      } else if (await tryAutoUnlock()) {
-        await enter();
       } else {
-        renderLock();
+        const auto = await tryAutoUnlock();
+        if (auto.ok) {
+          await enter();
+        } else if (auto.error) {
+          // 免密码模式开着但不是这次没开成 —— 把原因摆出来，
+          // 否则用户只会看到「明明开了还是要密码」。
+          renderLock(`免密码模式已开启，但这次没能自动解锁：${auto.error}`);
+        } else {
+          renderLock();
+        }
       }
     }
   } catch {

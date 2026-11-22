@@ -102,8 +102,15 @@ export const api = {
   status: () => invoke<VaultStatus>("vault_status"),
   /** 通知后端：首屏已绘制，可以显示窗口了。 */
   uiReady: () => invoke<void>("ui_ready"),
+  /**
+   * 建库。
+   *
+   * 返回 `hardware_bound`：`false` 表示这台机器读不到硬件标识，
+   * 库退回了「绑机器名 + 卷序列号」的老规则 —— 那种库里，改计算机名
+   * 或重装系统都会打不开。调用方必须把这件事告诉用户。
+   */
   create: (password: string, level?: string) =>
-    invoke<void>("vault_create", { password, level }),
+    invoke<{ hardware_bound: boolean }>("vault_create", { password, level }),
   /**
    * 打开库。
    *

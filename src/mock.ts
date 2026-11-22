@@ -65,7 +65,7 @@ export const mockApi = {
     count: store.length,
     seconds_until_lock: 300,
   }),
-  create: async () => {},
+  create: async () => ({ hardware_bound: true }),
   open: async () => {},
   lock: async () => {},
   save: async () => {},

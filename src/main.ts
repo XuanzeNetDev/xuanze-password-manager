@@ -7,7 +7,6 @@
  */
 
 import { api as realApi, errText, kindKey, type EntryView, type ItemView } from "./api";
-import { open, save } from "@tauri-apps/plugin-dialog";
 import { h, icon, replaceChildren } from "./dom";
 import logoUrl from "./assets/logo.png";
 import { applyTheme, getTheme, watchSystemTheme, type Theme } from "./theme";
@@ -1452,24 +1451,15 @@ async function openImport(): Promise<void> {
     go.disabled = true;
     go.textContent = "处理中…";
     try {
-      const picked = await open({
-        title: "选择要导入的文件",
-        multiple: false,
-        directory: false,
-        filters: [
-          { name: "璇泽备份或 Excel", extensions: ["xzbak", "xlsx"] },
-          { name: "所有文件", extensions: ["*"] },
-        ],
-      });
-      const path = typeof picked === "string" ? picked : null;
-      if (!path) {
+      // 选文件由后端弹系统对话框，前端拿不到路径。
+      const r = await api.importBackup(pw.value, bw.value);
+      if (r === null) {
+        // 用户取消
         busy = false;
         go.disabled = false;
         go.textContent = "选择文件并导入";
         return;
       }
-
-      const r = await api.importBackup(path, pw.value, bw.value);
       closeModal();
       await reloadList();
       await preloadAll();
@@ -1694,20 +1684,15 @@ async function openExport(): Promise<void> {
     go.disabled = true;
     go.textContent = "处理中…";
     try {
-      // 先让用户选位置。取消就什么都不做 —— 不要先输密码再告诉人家取消了。
-      const path = await save({
-        title: "导出加密备份",
-        defaultPath: `璇泽密钥库-${new Date().toISOString().slice(0, 10)}.xzbak`,
-        filters: [{ name: "璇泽密钥库备份", extensions: ["xzbak"] }],
-      });
-      if (!path) {
+      // 保存位置由后端弹系统对话框取得，前端不参与。
+      const n = await api.exportBackup(pw.value, bw.value);
+      if (n === null) {
+        // 用户在对话框里取消了：什么都不做
         busy = false;
         go.disabled = false;
         go.textContent = "选择位置并导出";
         return;
       }
-
-      const n = await api.exportBackup(path, pw.value, bw.value);
       closeModal();
       toast(`已导出 ${n} 条（加密）`, "换电脑时把这个文件拷过去，用「导入」打开");
     } catch (e) {

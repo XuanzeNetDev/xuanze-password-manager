@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use tauri::State;
+use tauri_plugin_dialog::DialogExt;
 use xz_core::entry::{Entry, EntryKind, Field};
 use xz_core::kdf::KdfParams;
 use xz_core::search;
@@ -1134,25 +1135,24 @@ pub struct AutolockResult {
 /// 导出加密备份（`.xzbak`）。
 ///
 /// 里面是一份完整的 xlsx（能被 Excel 打开），但**外面包了一层我们自己的
-/// 强加密**：Argon2id 64 MiB × 3 + AES-256-GCM。磁盘上不会出现明文表格 ——
-/// 这是这个产品之前最大的一个坑：备份是明文，而备份又是唯一能救命的动作。
+/// 强加密**：Argon2id 64 MiB × 3 + AES-256-GCM。磁盘上不会出现明文表格。
 ///
 /// 两个密码：
 /// - `password`（主密码）：证明操作者是本人。这一步要重跑 KDF，走锁外。
-/// - `backup_password`（备份密码）：加密这个文件。可以和主密码不同，
-///   允许为空的话就等于没有加密，所以直接拒绝空。
+/// - `backup_password`（备份密码）：加密这个文件。留空等于没加密，直接拒绝。
 ///
-/// **免密码模式不豁免主密码这一步。** 早先这里的写法是
-/// `if !auto_unlock_enabled() { verify_password }`，意思是开了免密码
-/// 就把导出的最后一道校验也一起关掉 —— 那等于「点一下设置，此后本机任何
-/// 程序都能让软件把整库倒出来」。
+/// **不接受路径参数。** 落盘位置由本函数自己弹系统对话框取得，与
+/// `vault_save` 同一口径。理由也相同：库解锁期间任何能构造 IPC 请求的本地
+/// 进程都能调用本命令，路径若由前端给，那就是一条往任意位置写文件的通道。
+///
+/// 返回 `None` 表示用户在对话框里取消了，调用方不必当失败处理。
 #[tauri::command]
 pub async fn export_backup(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
-    path: String,
     password: String,
     backup_password: String,
-) -> Result<usize, String> {
+) -> Result<Option<usize>, String> {
     if backup_password.is_empty() {
         return Err("备份密码不能为空 —— 它就是这个文件的锁".to_owned());
     }
@@ -1207,8 +1207,42 @@ pub async fn export_backup(
         (sheets, total)
     };
 
+    // 落盘位置由后端弹系统对话框取得，前端不参与 —— 与 `vault_save` 同一口径。
+    //
+    // 这道关的意义：库解锁期间，任何能构造 IPC 请求的本地进程都能调用本命令。
+    // 如果路径由前端给，那就是一条「往任意路径写文件」的通道；路径从对话框
+    // 出来，写到哪里就完全取决于坐在机器前的那个人点了什么。
+    //
+    // `blocking_*` 不能在主线程调（会死锁），所以整个调用移进阻塞线程池。
+    let picked = {
+        let app = app.clone();
+        let suggested = format!("璇泽密钥库-{}.xzbak", crate::export::fmt_ts(now_ts()));
+        // 日期部分就够，时间带进去文件名太长
+        let suggested = suggested
+            .replace(' ', "-")
+            .replace(':', "")
+            .split('.')
+            .next()
+            .unwrap_or("璇泽密钥库.xzbak")
+            .to_owned();
+        tauri::async_runtime::spawn_blocking(move || {
+            app.dialog()
+                .file()
+                .set_title("导出加密备份")
+                .set_file_name(&suggested)
+                .add_filter("璇泽密钥库备份", &["xzbak"])
+                .blocking_save_file()
+        })
+        .await
+        .map_err(|e| format!("打开保存对话框失败：{e}"))?
+    };
+    // 用户取消：不写文件，也不算失败
+    let Some(fp) = picked else { return Ok(None) };
+    let path_buf = fp
+        .into_path()
+        .map_err(|e| format!("这个位置不能用：{e}"))?;
+
     // 生成 xlsx 字节 → 整体加密 → 落盘，全程在阻塞线程池。
-    let path_buf = std::path::PathBuf::from(path);
     tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
         let xlsx = crate::export::write_xlsx_bytes(&sheets)?;
         let sealed = crate::backup::seal(&xlsx, &backup_password)?;
@@ -1223,7 +1257,7 @@ pub async fn export_backup(
     .await
     .map_err(|e| format!("导出任务失败：{e}"))??;
 
-    Ok(total)
+    Ok(Some(total))
 }
 
 /// 从备份文件（`.xzbak`）或普通 xlsx 导入。
@@ -1234,23 +1268,42 @@ pub async fn export_backup(
 ///
 /// 需要主密码 —— 导入会改动库内容。
 ///
+/// **不接受路径参数**，选文件由本函数弹系统对话框。返回 `None` 表示用户取消。
+///
 /// 这条路径的定位是**灾备恢复**，所以自定义字段、创建/过期时间、
 /// 使用次数都要一起还原，否则「恢复」是假的。
 ///
 /// 去重规则：**名称 + 账号都相同**视为同一条，跳过不导入。
 #[tauri::command]
 pub async fn import_backup(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
-    path: String,
     password: String,
     backup_password: Option<String>,
-) -> Result<ImportSummary, String> {
+) -> Result<Option<ImportSummary>, String> {
     if password.is_empty() {
         return Err("请输入主密码".to_owned());
     }
 
+    // 选文件：同样由后端弹对话框。
+    let picked = {
+        let app = app.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            app.dialog()
+                .file()
+                .set_title("选择要导入的文件")
+                .add_filter("璇泽备份或 Excel", &["xzbak", "xlsx"])
+                .blocking_pick_file()
+        })
+        .await
+        .map_err(|e| format!("打开文件对话框失败：{e}"))?
+    };
+    let Some(fp) = picked else { return Ok(None) };
+    let path_buf = fp
+        .into_path()
+        .map_err(|e| format!("这个位置读不了：{e}"))?;
+
     // 读文件 + 解密（如果是备份）+ 解析，全放锁外。
-    let path_buf = std::path::PathBuf::from(path);
     let backup_pw = backup_password.unwrap_or_default();
     let sheets = tauri::async_runtime::spawn_blocking(move || -> Result<_, String> {
         let raw = std::fs::read(&path_buf).map_err(|e| format!("打不开文件：{e}"))?;
@@ -1333,11 +1386,11 @@ pub async fn import_backup(
         u.vault.save().map_err(|e| format!("导入后保存失败：{e}"))?;
     }
 
-    Ok(ImportSummary {
+    Ok(Some(ImportSummary {
         imported,
         skipped,
         errors,
-    })
+    }))
 }
 
 /// 单次导入的行数上限。只为挡住畸形/恶意文件，正常备份连零头都用不到。

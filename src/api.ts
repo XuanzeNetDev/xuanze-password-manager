@@ -157,16 +157,15 @@ export const api = {
    * 里面是完整的 xlsx，但外面用 Argon2id + AES-256-GCM 包了一层：
    * 磁盘上不会出现明文表格。`backupPassword` 是这个文件的锁，不能为空。
    */
-  exportBackup: (path: string, password: string, backupPassword: string) =>
-    invoke<number>("export_backup", { path, password, backupPassword }),
+  exportBackup: (password: string, backupPassword: string) =>
+    invoke<number | null>("export_backup", { password, backupPassword }),
   /**
    * 从 `.xzbak` 或普通 `.xlsx` 导入。
    *
    * 选中加密备份时必须给 `backupPassword`；普通表格留空即可。
    */
-  importBackup: (path: string, password: string, backupPassword?: string) =>
-    invoke<{ imported: number; skipped: number; errors: string[] }>("import_backup", {
-      path,
+  importBackup: (password: string, backupPassword?: string) =>
+    invoke<{ imported: number; skipped: number; errors: string[] } | null>("import_backup", {
       password,
       backupPassword: backupPassword && backupPassword.length > 0 ? backupPassword : null,
     }),

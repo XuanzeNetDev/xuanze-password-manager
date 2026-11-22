@@ -265,7 +265,7 @@ fn unescape(s: &str) -> String {
 ///
 /// 带秒是必须的：这张表要能被导回来，而 `created_at` / `updated_at`
 /// 是「秒」精度。只写到时分会把时间四舍五入掉，往返一次就对不上了。
-fn fmt_ts(ts: i64) -> String {
+pub(crate) fn fmt_ts(ts: i64) -> String {
     if ts <= 0 {
         return String::new();
     }

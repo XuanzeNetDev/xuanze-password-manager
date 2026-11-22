@@ -317,4 +317,4 @@ verify_block = nonce(12) || AES-256-GCM(verify_key, nonce, "xzvlt/v1/verify-ok",
 | `save_and_open_from_disk` | 原子保存无残留临时文件 |
 | `change_password_then_old_fails` | 换密码后旧密码失效 |
 
-`cargo test -p xz-core` 应全绿（当前 54 项）。
+`cargo test -p xz-core` 应全绿（当前 60 项）。

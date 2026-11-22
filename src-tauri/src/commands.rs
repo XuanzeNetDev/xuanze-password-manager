@@ -19,7 +19,15 @@ use crate::clipboard;
 use crate::AppState;
 
 /// 剪贴板里的秘密存活时长。
-const SECRET_TTL: Duration = Duration::from_secs(25);
+///
+/// 敏感内容（密码、密钥、私钥）短一些：目标用户是「复制完立刻去粘贴」，
+/// 15 秒足够走完这个动作，多留一刻就多一分被别的程序读到的机会。
+const SECRET_TTL: Duration = Duration::from_secs(15);
+
+/// 非敏感内容的存活时长。
+///
+/// 账号、网址这类东西粘完可能还要再粘一两次，留得久一些更像正常剪贴板。
+const PLAIN_TTL: Duration = Duration::from_secs(60);
 
 fn now_ts() -> i64 {
     std::time::SystemTime::now()
@@ -693,14 +701,10 @@ pub fn copy_to_clipboard(
     let mut guard = state.session.lock().map_err(err)?;
     guard.un().ok_or("尚未解锁")?;
 
-    // 敏感内容一律登记指纹，保证锁定时能被清掉。
-    //
-    // 原先这里按 `sensitive` 分两个分支，但两边调用完全一样 ——
-    // 因为 `copy_with_ttl` 本身就会登记指纹。留着那个分支只会让人
-    // 以为「非敏感内容不清剪贴板」，实际不是。参数保留是为了接口稳定，
-    // 语义上「调用方声明这段内容敏不敏感」，将来若要做差异化 TTL 用它。
-    let _ = sensitive;
-    clipboard::copy_with_ttl(&text, SECRET_TTL)
+    // 敏感内容用短 TTL，非敏感用长 TTL。两者都会登记指纹，
+    // 锁库时一律清掉 —— 区别只在「你不锁的情况下它能在剪贴板待多久」。
+    let ttl = if sensitive { SECRET_TTL } else { PLAIN_TTL };
+    clipboard::copy_with_ttl(&text, ttl)
 }
 
 /// 复制热度榜第 N 条的密钥。`index` 从 0 开始。

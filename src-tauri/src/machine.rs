@@ -208,8 +208,15 @@ fn write_registry(ids: &[String]) -> Result<(), String> {
 }
 
 /// 本机标识：机器名 + 系统卷序列号。
+///
+/// 两个成分都走 Win32 API 读取，不读环境变量。
+///
+/// 为什么：`COMPUTERNAME` 和 `SystemDrive` 都是用户态可改的环境变量，
+/// 任何进程都能在启动时把它们改掉再拉起见程序，得到的 pepper 就变了。
+/// 而本文件上面 `roaming_appdata()` 已经明确写过「不能用 `%APPDATA%`，
+/// 因为它可被改写」—— 同样的理由对这两个变量一样成立，标准得一致。
 fn machine_identity() -> String {
-    let mut s = std::env::var("COMPUTERNAME").unwrap_or_default();
+    let mut s = computer_name().unwrap_or_default();
     if let Some(serial) = volume_serial() {
         s.push('-');
         s.push_str(&serial);
@@ -220,12 +227,38 @@ fn machine_identity() -> String {
     s
 }
 
+/// 机器名，走 `GetComputerNameExW`。
+///
+/// 走 API 而不是环境变量的原因见 `machine_identity` 的注释。
+fn computer_name() -> Option<String> {
+    use std::os::windows::ffi::OsStringExt;
+    use windows_sys::Win32::System::SystemInformation::{
+        ComputerNameDnsHostname, GetComputerNameExW,
+    };
+
+    let mut buf = [0u16; 256];
+    let mut len = buf.len() as u32;
+    // SAFETY: buf 有 256 个 u16 的容量，len 是其真实长度按引用传入，
+    // API 只在这段可写区间内填充并以 NUL 结尾。
+    let ok = unsafe { GetComputerNameExW(ComputerNameDnsHostname, buf.as_mut_ptr(), &mut len) };
+    if ok == 0 || len == 0 {
+        return None;
+    }
+    Some(
+        std::ffi::OsString::from_wide(&buf[..len as usize])
+            .to_string_lossy()
+            .into_owned(),
+    )
+}
+
 /// 系统卷序列号。
 fn volume_serial() -> Option<String> {
     use std::os::windows::ffi::OsStrExt;
 
-    let drive = std::env::var("SystemDrive").unwrap_or_else(|_| "C:".to_owned());
-    let root: Vec<u16> = std::ffi::OsStr::new(&format!("{drive}\\"))
+    // 系统盘固定取 C:，不读 `SystemDrive` —— 理由同 `machine_identity`。
+    // Windows 装在别的盘的机器极少，而且那种情况下这一项退化为空，
+    // 由机器名单独承担区分度，不影响正确性。
+    let root: Vec<u16> = std::ffi::OsStr::new("C:\\")
         .encode_wide()
         .chain(std::iter::once(0))
         .collect();

@@ -28,6 +28,9 @@ pub mod search;
 pub mod secure;
 pub mod vault;
 
+#[cfg(test)]
+mod fuzz_tests;
+
 pub use error::{Error, Result};
 pub use vault::Vault;
 

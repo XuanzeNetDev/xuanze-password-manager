@@ -1,4 +1,4 @@
-# 璇泽密钥库 · 文件格式规范 v1
+# 璇泽密钥库 · 文件格式规范 v2
 
 > 版本：1 · 状态：稳定 · 最后修改：2026-11-21
 >
@@ -281,7 +281,7 @@ verify_block = nonce(12) || AES-256-GCM(verify_key, nonce, "xzvlt/v1/verify-ok",
 
 ---
 
-## 9. 已知限制与 v2 待办
+## 9. 已知限制与后续待办
 
 1. **索引不轮换。** 每次保存都全量重加密正文。5 万条时保存 ≈ 400 ms，
    对个人库够用，但不适合「十万条 + 高频写入」。v2 可考虑分段 + 只重写变动部分。
@@ -317,4 +317,4 @@ verify_block = nonce(12) || AES-256-GCM(verify_key, nonce, "xzvlt/v1/verify-ok",
 | `save_and_open_from_disk` | 原子保存无残留临时文件 |
 | `change_password_then_old_fails` | 换密码后旧密码失效 |
 
-`cargo test -p xz-core` 应全绿（当前 50 项）。
+`cargo test -p xz-core` 应全绿（当前 54 项）。

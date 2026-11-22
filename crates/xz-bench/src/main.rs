@@ -74,28 +74,44 @@ fn bench_hot_paths() {
     for _ in 0..1000 {
         let _ = search::search(v.index(), "", 20);
     }
-    println!("  {:<24} {:>9}/次", "搜索·空查询(热度榜)", fmt_dur(t.elapsed() / 1000));
+    println!(
+        "  {:<24} {:>9}/次",
+        "搜索·空查询(热度榜)",
+        fmt_dur(t.elapsed() / 1000)
+    );
 
     // 搜索：精确命中
     let t = Instant::now();
     for _ in 0..1000 {
         let _ = search::search(v.index(), "key-004242", 20);
     }
-    println!("  {:<24} {:>9}/次", "搜索·精确命中", fmt_dur(t.elapsed() / 1000));
+    println!(
+        "  {:<24} {:>9}/次",
+        "搜索·精确命中",
+        fmt_dur(t.elapsed() / 1000)
+    );
 
     // 搜索：全库无命中（最坏情况：每条都跑完所有打分阶段）
     let t = Instant::now();
     for _ in 0..1000 {
         let _ = search::search(v.index(), "zzzzzzzz-not-exist", 20);
     }
-    println!("  {:<24} {:>9}/次", "搜索·全库无命中(最坏)", fmt_dur(t.elapsed() / 1000));
+    println!(
+        "  {:<24} {:>9}/次",
+        "搜索·全库无命中(最坏)",
+        fmt_dur(t.elapsed() / 1000)
+    );
 
     // 搜索：子序列模糊（靠后的兜底分支）
     let t = Instant::now();
     for _ in 0..1000 {
         let _ = search::search(v.index(), "k4242", 20);
     }
-    println!("  {:<24} {:>9}/次", "搜索·子序列模糊", fmt_dur(t.elapsed() / 1000));
+    println!(
+        "  {:<24} {:>9}/次",
+        "搜索·子序列模糊",
+        fmt_dur(t.elapsed() / 1000)
+    );
 
     // 搜索：中文 —— 分两档测，才能看出「窄化路径」到底有没有生效。
     // 这一库是 ASCII 为主，属于窄化路径的目标场景。
@@ -103,7 +119,11 @@ fn bench_hot_paths() {
     for _ in 0..1000 {
         let _ = search::search(v.index(), "服务凭据", 20);
     }
-    println!("  {:<24} {:>9}/次", "搜索·中文(ASCII 库)", fmt_dur(t.elapsed() / 1000));
+    println!(
+        "  {:<24} {:>9}/次",
+        "搜索·中文(ASCII 库)",
+        fmt_dur(t.elapsed() / 1000)
+    );
 
     // 中文为主的库：窄化路径会主动放弃，退回全量扫描。
     // 这是最坏情况，也是中文用户真实会遇到的一档。
@@ -115,19 +135,31 @@ fn bench_hot_paths() {
     for _ in 0..100 {
         let _ = search::search(cv.index(), "服务凭据", 20);
     }
-    println!("  {:<24} {:>9}/次", "搜索·中文(中文库)", fmt_dur(t.elapsed() / 100));
+    println!(
+        "  {:<24} {:>9}/次",
+        "搜索·中文(中文库)",
+        fmt_dur(t.elapsed() / 100)
+    );
     let t = Instant::now();
     for _ in 0..100 {
         let _ = search::search(cv.index(), "银行", 20);
     }
-    println!("  {:<24} {:>9}/次", "搜索·中文短词(中文库)", fmt_dur(t.elapsed() / 100));
+    println!(
+        "  {:<24} {:>9}/次",
+        "搜索·中文短词(中文库)",
+        fmt_dur(t.elapsed() / 100)
+    );
 
     // 搜索：模糊前缀
     let t = Instant::now();
     for _ in 0..1000 {
         let _ = search::search(v.index(), "ke", 20);
     }
-    println!("  {:<24} {:>9}/次", "搜索·模糊前缀(1万条)", fmt_dur(t.elapsed() / 1000));
+    println!(
+        "  {:<24} {:>9}/次",
+        "搜索·模糊前缀(1万条)",
+        fmt_dur(t.elapsed() / 1000)
+    );
 
     // 取秘密
     let id = v.index().all_sorted()[0].id.clone();
@@ -135,21 +167,33 @@ fn bench_hot_paths() {
     for _ in 0..100_000 {
         let _ = v.reveal_secret(&id);
     }
-    println!("  {:<24} {:>9}/次", "取主秘密", fmt_dur(t.elapsed() / 100_000));
+    println!(
+        "  {:<24} {:>9}/次",
+        "取主秘密",
+        fmt_dur(t.elapsed() / 100_000)
+    );
 
     // 记一次使用（索引增量更新）
     let t = Instant::now();
     for _ in 0..10_000 {
         let _ = v.record_use(&id, 1);
     }
-    println!("  {:<24} {:>9}/次", "记录使用(索引更新)", fmt_dur(t.elapsed() / 10_000));
+    println!(
+        "  {:<24} {:>9}/次",
+        "记录使用(索引更新)",
+        fmt_dur(t.elapsed() / 10_000)
+    );
 
     // 热度榜
     let t = Instant::now();
     for _ in 0..1000 {
         let _ = v.index().hot(9);
     }
-    println!("  {:<24} {:>9}/次", "热度榜 top9", fmt_dur(t.elapsed() / 1000));
+    println!(
+        "  {:<24} {:>9}/次",
+        "热度榜 top9",
+        fmt_dur(t.elapsed() / 1000)
+    );
 }
 
 fn bench_full_pipeline(n: usize) {
@@ -205,7 +249,9 @@ fn bench_full_pipeline(n: usize) {
 }
 
 fn make_entries(n: usize) -> Vec<Entry> {
-    let tags = ["api", "cloud", "work", "personal", "prod", "staging", "infra"];
+    let tags = [
+        "api", "cloud", "work", "personal", "prod", "staging", "infra",
+    ];
     (0..n)
         .map(|i| Entry {
             id: format!("{i:032x}"),
@@ -232,11 +278,7 @@ fn make_entries(n: usize) -> Vec<Entry> {
             },
             created_at: 1_700_000_000 + i as i64,
             updated_at: 1_700_000_000 + i as i64,
-            expires_at: if i % 11 == 0 {
-                1_800_000_000
-            } else {
-                0
-            },
+            expires_at: if i % 11 == 0 { 1_800_000_000 } else { 0 },
             use_count: (i % 37) as u32,
             last_used_at: 1_700_000_000 + i as i64,
         })
@@ -245,13 +287,27 @@ fn make_entries(n: usize) -> Vec<Entry> {
 
 /// 中文为主的条目集，用来测「窄化路径失效」时最坏的一档。
 fn make_cjk_entries(n: usize) -> Vec<Entry> {
-    let prefix = ["阿里云", "腾讯云", "华为云", "自建机房", "银行", "支付", "邮箱", "服务器"];
+    let prefix = [
+        "阿里云",
+        "腾讯云",
+        "华为云",
+        "自建机房",
+        "银行",
+        "支付",
+        "邮箱",
+        "服务器",
+    ];
     let suffix = ["访问密钥", "登录密码", "接口令牌", "数据库口令", "证书私钥"];
     (0..n)
         .map(|i| Entry {
             id: format!("{:032x}", i as u64 + 0x8000_0000u64),
             kind: EntryKind::ApiKey,
-            name: format!("{} {}号 {}", prefix[i % prefix.len()], i, suffix[i % suffix.len()]),
+            name: format!(
+                "{} {}号 {}",
+                prefix[i % prefix.len()],
+                i,
+                suffix[i % suffix.len()]
+            ),
             username: format!("账号{}", i % 500),
             secret: format!("key-中文-{:08}", i),
             url: format!("https://内网{}.示例.中国/api", i % 89),
@@ -267,7 +323,8 @@ fn make_cjk_entries(n: usize) -> Vec<Entry> {
         .collect()
 }
 
-fn median(v: &mut [Duration]) -> Duration {    v.sort_unstable();
+fn median(v: &mut [Duration]) -> Duration {
+    v.sort_unstable();
     v[v.len() / 2]
 }
 

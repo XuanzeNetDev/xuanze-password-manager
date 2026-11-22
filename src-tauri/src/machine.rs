@@ -75,7 +75,6 @@ fn ticket_path() -> Option<PathBuf> {
     Some(base.join("cn.xuanze.vault").join("unlock.ticket"))
 }
 
-
 /// 票据有效期。到期后必须重新输密码走完整 KDF。
 const TICKET_TTL_SECS: u64 = 12 * 3600;
 
@@ -298,7 +297,7 @@ fn restrict_acl(path: &std::path::Path) {
 
 /// DPAPI 加密（当前用户）。
 fn dpapi_protect(data: &[u8]) -> Result<Vec<u8>, String> {
-    let mut input = CRYPT_INTEGER_BLOB {
+    let input = CRYPT_INTEGER_BLOB {
         cbData: data.len() as u32,
         pbData: data.as_ptr() as *mut u8,
     };
@@ -310,7 +309,7 @@ fn dpapi_protect(data: &[u8]) -> Result<Vec<u8>, String> {
     // 立刻拷出后 LocalFree 释放。
     let ok = unsafe {
         CryptProtectData(
-            &mut input,
+            &input,
             std::ptr::null(),
             std::ptr::null_mut(),
             std::ptr::null_mut(),
@@ -336,7 +335,7 @@ fn dpapi_unprotect(data: &[u8]) -> Result<Vec<u8>, String> {
     if data.is_empty() {
         return Err("绑定材料为空".to_owned());
     }
-    let mut input = CRYPT_INTEGER_BLOB {
+    let input = CRYPT_INTEGER_BLOB {
         cbData: data.len() as u32,
         pbData: data.as_ptr() as *mut u8,
     };
@@ -347,7 +346,7 @@ fn dpapi_unprotect(data: &[u8]) -> Result<Vec<u8>, String> {
     // SAFETY: 同上
     let ok = unsafe {
         CryptUnprotectData(
-            &mut input,
+            &input,
             std::ptr::null_mut(),
             std::ptr::null_mut(),
             std::ptr::null_mut(),

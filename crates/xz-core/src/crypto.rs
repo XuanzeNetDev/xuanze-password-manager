@@ -103,13 +103,7 @@ pub fn open(key: &SecretBytes, aad: &[u8], blob: &[u8]) -> Result<SecretBytes> {
     let nonce = Nonce::from_slice(nonce_bytes);
 
     let pt = cipher
-        .decrypt(
-            nonce,
-            Payload {
-                msg: ct,
-                aad,
-            },
-        )
+        .decrypt(nonce, Payload { msg: ct, aad })
         .map_err(|_| Error::BadPasswordOrTampered)?;
 
     Ok(SecretBytes::from_vec(pt))
@@ -117,6 +111,9 @@ pub fn open(key: &SecretBytes, aad: &[u8], blob: &[u8]) -> Result<SecretBytes> {
 
 #[cfg(test)]
 mod tests {
+    // 测试里 unwrap 是正常写法：出错就该 panic，不需要优雅降级。
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
     use super::*;
 
     fn master() -> SecretBytes {

@@ -158,7 +158,7 @@ pub fn search<'a>(index: &'a Index, query: &str, limit: usize) -> Vec<Hit<'a>> {
     }
 
     // 只对 ≤ 4×limit 条排序，然后截断。
-    buf.sort_unstable_by(|a, b| a.score.cmp(&b.score));
+    buf.sort_unstable_by_key(|a| a.score);
     buf.truncate(limit);
 
     let items: Vec<&IndexItem> = index.indexed_items().map(|(_, it)| it).collect();
@@ -280,6 +280,9 @@ fn is_subsequence(needle: &[u8], hay: &[u8]) -> bool {
 
 #[cfg(test)]
 mod tests {
+    // 测试里 unwrap 是正常写法：出错就该 panic，不需要优雅降级。
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
     use super::*;
     use crate::entry::{Entry, EntryKind};
 
@@ -304,10 +307,38 @@ mod tests {
 
     fn fixture() -> Index {
         Index::build(&[
-            e("1", "GitHub", "me@gh.com", "https://github.com", &["code"], 20),
-            e("2", "gitlab-work", "me@gl.com", "https://gitlab.com", &["code"], 3),
-            e("3", "OpenAI Prod", "team", "https://api.openai.com", &["api"], 9),
-            e("4", "AWS Root", "root", "https://aws.amazon.com", &["cloud"], 0),
+            e(
+                "1",
+                "GitHub",
+                "me@gh.com",
+                "https://github.com",
+                &["code"],
+                20,
+            ),
+            e(
+                "2",
+                "gitlab-work",
+                "me@gl.com",
+                "https://gitlab.com",
+                &["code"],
+                3,
+            ),
+            e(
+                "3",
+                "OpenAI Prod",
+                "team",
+                "https://api.openai.com",
+                &["api"],
+                9,
+            ),
+            e(
+                "4",
+                "AWS Root",
+                "root",
+                "https://aws.amazon.com",
+                &["cloud"],
+                0,
+            ),
             e("5", "银行密码", "me", "https://bank.example", &["life"], 1),
         ])
     }

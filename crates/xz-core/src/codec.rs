@@ -4,26 +4,27 @@
 //!
 //! ```text
 //! offset  size  field
-//! 0       8     magic            "XZVLT\0\x01\0"
-//! 8       2     version          u16 = 1
+//! 0       8     magic            "XZVLT\0\x02\0"
+//! 8       2     version          u16 = 2
 //! 10      1     kdf_algo         u8  = 1 (Argon2id v0x13)
 //! 11      4     kdf_mem_kib      u32
 //! 15      4     kdf_iterations   u32
 //! 19      4     kdf_parallelism  u32
 //! 23      32    kdf_salt
-//! 55      4     index_len        u32
-//! 59      n     index_blob       nonce || AES-GCM(index_json)
-//! 59+n    4     body_len         u32
-//! 63+n    m     body_blob        nonce || AES-GCM(body_json)
-//! 63+n+m  36    verify_block     nonce || AES-GCM(const)
+//! 55      16    vault_id         库标识，创建后终身不变
+//! 71      4     index_len        u32
+//! 75      n     index_blob       nonce || AES-GCM(index_json)
+//! 75+n    4     body_len         u32
+//! 79+n    m     body_blob        nonce || AES-GCM(body_json)
+//! 79+n+m  46    verify_block     nonce || AES-GCM(const)
 //! ```
 //!
-//! 头 55 字节作为整个文件的 AAD，改一个 bit 就解不开。
+//! 头 71 字节作为整个文件的 AAD，改一个 bit 就解不开。
 
 use crate::crypto::{self, KeyPurpose};
 use crate::error::{Error, Result};
 use crate::kdf::{KdfParams, MASTER_KEY_LEN};
-use crate::{MAGIC, FORMAT_VERSION};
+use crate::{FORMAT_VERSION, MAGIC};
 
 /// 固定头长度（到 index_len 之前）。
 pub const HEADER_LEN: usize = 71;
@@ -136,8 +137,12 @@ pub fn split_sealed(bytes: &[u8]) -> Result<SealedParts<'_>> {
         if *off + 4 > bytes.len() {
             return Err(Error::Corrupt("段长度字段被截断"));
         }
-        let n = u32::from_le_bytes([bytes[*off], bytes[*off + 1], bytes[*off + 2], bytes[*off + 3]])
-            as usize;
+        let n = u32::from_le_bytes([
+            bytes[*off],
+            bytes[*off + 1],
+            bytes[*off + 2],
+            bytes[*off + 3],
+        ]) as usize;
         *off += 4;
         Ok(n)
     };
@@ -187,7 +192,10 @@ pub fn assemble(header: &[u8; HEADER_LEN], index: &[u8], body: &[u8], verify: &[
 }
 
 /// 生成校验块。
-pub fn make_verify_block(master_key: &crate::secure::SecretBytes, header: &[u8; HEADER_LEN]) -> Result<Vec<u8>> {
+pub fn make_verify_block(
+    master_key: &crate::secure::SecretBytes,
+    header: &[u8; HEADER_LEN],
+) -> Result<Vec<u8>> {
     let vk = crypto::derive_subkey(master_key, KeyPurpose::Verify)?;
     crypto::seal(&vk, header, VERIFY_PLAINTEXT)
 }
@@ -215,6 +223,9 @@ pub const fn master_key_len() -> usize {
 
 #[cfg(test)]
 mod tests {
+    // 测试里 unwrap 是正常写法：出错就该 panic，不需要优雅降级。
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
     use super::*;
 
     fn hdr() -> FileHeader {

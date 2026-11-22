@@ -77,7 +77,6 @@ impl std::fmt::Debug for Vault {
 
 impl Vault {
     /// 新建空 vault。
-    #[must_use]
     pub fn create(password: &str, params: KdfParams) -> Result<Self> {
         Self::create_bound(password, params, &[])
     }
@@ -130,12 +129,7 @@ impl Vault {
         if pepper.is_empty() {
             kdf::derive_master_key(password.as_bytes(), &header.salt, header.kdf)
         } else {
-            crate::binding::derive_bound_key(
-                password.as_bytes(),
-                pepper,
-                &header.salt,
-                header.kdf,
-            )
+            crate::binding::derive_bound_key(password.as_bytes(), pepper, &header.salt, header.kdf)
         }
     }
 
@@ -327,8 +321,7 @@ impl Vault {
         // 的明文快照，留在堆上等于前面所有加密白做。
         let entries: Vec<Entry> = self.entries.values().cloned().collect();
         let body_plain = zeroize::Zeroizing::new(
-            serde_json::to_vec(&Body { entries })
-                .map_err(|_| Error::Corrupt("正文序列化失败"))?,
+            serde_json::to_vec(&Body { entries }).map_err(|_| Error::Corrupt("正文序列化失败"))?,
         );
         let body_key = crypto::derive_subkey(&self.master_key, KeyPurpose::Payload)?;
         let body_blob = crypto::seal(&body_key, &header_bytes, &body_plain)?;
@@ -345,7 +338,12 @@ impl Vault {
         // 校验块
         let verify = codec::make_verify_block(&self.master_key, &header_bytes)?;
 
-        Ok(codec::assemble(&header_bytes, &idx_blob, &body_blob, &verify))
+        Ok(codec::assemble(
+            &header_bytes,
+            &idx_blob,
+            &body_blob,
+            &verify,
+        ))
     }
 
     /// 原子保存：先写同目录临时文件，再 rename 覆盖。
@@ -355,7 +353,7 @@ impl Vault {
         let path = self
             .path
             .clone()
-            .ok_or_else(|| Error::Invalid("vault 还没有落盘路径"))?;
+            .ok_or(Error::Invalid("vault 还没有落盘路径"))?;
         let bytes = self.seal()?;
         write_atomic(&path, &bytes)?;
         self.dirty = false;
@@ -501,11 +499,7 @@ impl Vault {
     pub fn stats(&self, now: i64) -> VaultStats {
         VaultStats {
             total: self.entries.len(),
-            expired: self
-                .entries
-                .values()
-                .filter(|e| e.is_expired(now))
-                .count(),
+            expired: self.entries.values().filter(|e| e.is_expired(now)).count(),
             never_used: self.entries.values().filter(|e| e.use_count == 0).count(),
             tags: self.index.tag_counts().len(),
         }
@@ -530,11 +524,7 @@ pub struct VaultSnapshot {
 ///
 /// 这是 `Vault::reseal_with_password` 的自由函数版本 ——
 /// 不需要持有 `Vault`，因此可以在锁外调用。
-pub fn reseal_snapshot(
-    snap: &VaultSnapshot,
-    new_password: &str,
-    pepper: &[u8],
-) -> Result<Vec<u8>> {
+pub fn reseal_snapshot(snap: &VaultSnapshot, new_password: &str, pepper: &[u8]) -> Result<Vec<u8>> {
     let salt = kdf::random_salt();
     let key = if pepper.is_empty() {
         kdf::derive_master_key(new_password.as_bytes(), &salt, snap.kdf)?
@@ -604,10 +594,7 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
         use std::fmt::Write as _;
         let _ = write!(suffix, "{b:02x}");
     }
-    let base = path
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("vault");
+    let base = path.file_name().and_then(|s| s.to_str()).unwrap_or("vault");
     let tmp = dir.join(format!(".{base}.{suffix}.tmp"));
 
     // RAII：任何提前返回（write 失败、sync 失败、panic）都会删掉临时文件。
@@ -640,6 +627,9 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    // 测试里 unwrap 是正常写法：出错就该 panic，不需要优雅降级。
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
     use super::*;
     use crate::entry::EntryKind;
 
@@ -805,6 +795,9 @@ mod tests {
 
 #[cfg(test)]
 mod binding_tests {
+    // 测试里 unwrap 是正常写法：出错就该 panic，不需要优雅降级。
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
     use super::*;
 
     /// pepper 不同 → 派生出的主密钥不同 → 校验块过不去。
@@ -832,11 +825,15 @@ mod binding_tests {
             expires_at: 0,
             use_count: 0,
             last_used_at: 0,
-        }).unwrap();
+        })
+        .unwrap();
         let bytes = v.seal().unwrap();
 
         // 同一台机器：能开
-        assert!(Vault::open_bound(&bytes, pw, &pepper_a).is_ok(), "本机应该能打开");
+        assert!(
+            Vault::open_bound(&bytes, pw, &pepper_a).is_ok(),
+            "本机应该能打开"
+        );
         // 换机器：密码对也打不开
         assert!(
             Vault::open_bound(&bytes, pw, &pepper_b).is_err(),
@@ -873,15 +870,22 @@ mod binding_tests {
             expires_at: 0,
             use_count: 0,
             last_used_at: 0,
-        }).unwrap();
+        })
+        .unwrap();
         let bytes = v.seal().unwrap();
         assert!(Vault::open_bound(&bytes, pw, &real).is_ok());
-        assert!(Vault::open_bound(&bytes, pw, &fake).is_err(), "换了随机串必须打不开");
+        assert!(
+            Vault::open_bound(&bytes, pw, &fake).is_err(),
+            "换了随机串必须打不开"
+        );
     }
 }
 
 #[cfg(test)]
 mod vault_identity_tests {
+    // 测试里 unwrap 是正常写法：出错就该 panic，不需要优雅降级。
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
     use super::*;
     use crate::kdf::KdfParams;
 

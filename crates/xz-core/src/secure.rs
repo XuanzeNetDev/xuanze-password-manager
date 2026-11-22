@@ -128,6 +128,9 @@ pub fn ct_eq(a: &[u8], b: &[u8]) -> bool {
 
 #[cfg(test)]
 mod tests {
+    // 测试里 unwrap 是正常写法：出错就该 panic，不需要优雅降级。
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
     use super::*;
 
     #[test]

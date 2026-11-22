@@ -114,11 +114,7 @@ pub const MASTER_KEY_LEN: usize = 32;
 ///
 /// # 错误
 /// 参数不合法或 Argon2 内部失败时返回错误。**不会**把密码写进错误信息。
-pub fn derive_master_key(
-    password: &[u8],
-    salt: &[u8],
-    params: KdfParams,
-) -> Result<SecretBytes> {
+pub fn derive_master_key(password: &[u8], salt: &[u8], params: KdfParams) -> Result<SecretBytes> {
     use argon2::{Algorithm, Argon2, Params, Version};
 
     params.validate()?;
@@ -170,6 +166,9 @@ pub fn random_bytes<const N: usize>() -> [u8; N] {
 
 #[cfg(test)]
 mod tests {
+    // 测试里 unwrap 是正常写法：出错就该 panic，不需要优雅降级。
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
     use super::*;
 
     #[test]

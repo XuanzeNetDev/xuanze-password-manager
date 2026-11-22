@@ -128,7 +128,7 @@ impl Index {
     #[must_use]
     pub fn all_sorted(&self) -> Vec<&IndexItem> {
         let mut v: Vec<&IndexItem> = self.items.iter().map(|c| &c.item).collect();
-        v.sort_unstable_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        v.sort_unstable_by_key(|a| a.name.to_lowercase());
         v
     }
 
@@ -174,10 +174,8 @@ impl Index {
                 *counts.entry(t.as_str()).or_insert(0) += 1;
             }
         }
-        let mut v: Vec<(String, usize)> = counts
-            .into_iter()
-            .map(|(k, n)| (k.to_owned(), n))
-            .collect();
+        let mut v: Vec<(String, usize)> =
+            counts.into_iter().map(|(k, n)| (k.to_owned(), n)).collect();
         v.sort_unstable_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
         v
     }
@@ -193,6 +191,9 @@ impl Index {
 
 #[cfg(test)]
 mod tests {
+    // 测试里 unwrap 是正常写法：出错就该 panic，不需要优雅降级。
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
     use super::*;
     use crate::entry::EntryKind;
 

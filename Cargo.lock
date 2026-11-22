@@ -4822,7 +4822,6 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "subtle",
- "windows-sys 0.59.0",
  "zeroize",
 ]
 

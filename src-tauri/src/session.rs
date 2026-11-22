@@ -70,7 +70,8 @@ impl Session {
     /// 新建库并进入解锁态。
     pub fn create(&mut self, password: &str, params: KdfParams) -> xz_core::Result<()> {
         // 建库时就绑到本机：之后的 pepper 缺失或换了机器都打不开
-        let pepper = crate::machine::pepper().map_err(|_| xz_core::Error::Corrupt("机器绑定失败"))?;
+        let pepper =
+            crate::machine::pepper().map_err(|_| xz_core::Error::Corrupt("机器绑定失败"))?;
         let vault = Vault::create_bound(password, params, &pepper)?;
         *self = Session::Unlocked(Box::new(Unlocked {
             vault,
@@ -98,12 +99,12 @@ impl Session {
     /// 慢的 KDF 在锁外跑完了，这里只做解密和解析，可以安全地持锁。
     pub fn install(
         &mut self,
-        path: &PathBuf,
+        path: &std::path::Path,
         bytes: &[u8],
         key: xz_core::secure::SecretBytes,
     ) -> xz_core::Result<()> {
         let mut vault = Vault::open_bound_with_key(bytes, key)?;
-        vault.set_path(path.clone());
+        vault.set_path(path.to_path_buf());
         *self = Session::Unlocked(Box::new(Unlocked {
             vault,
             last_activity: Instant::now(),
@@ -115,10 +116,11 @@ impl Session {
 
     /// 打开库并进入解锁态。
     pub fn open(&mut self, path: &PathBuf, password: &str) -> xz_core::Result<()> {
-        let pepper = crate::machine::pepper().map_err(|_| xz_core::Error::Corrupt("机器绑定失败"))?;
+        let pepper =
+            crate::machine::pepper().map_err(|_| xz_core::Error::Corrupt("机器绑定失败"))?;
         let bytes = std::fs::read(path).map_err(xz_core::Error::Io)?;
         let mut vault = Vault::open_bound(&bytes, password, &pepper)?;
-        vault.set_path(path.clone());
+        vault.set_path(path.to_path_buf());
         *self = Session::Unlocked(Box::new(Unlocked {
             vault,
             last_activity: Instant::now(),
@@ -183,11 +185,9 @@ impl Session {
     #[must_use]
     pub fn seconds_until_lock(&self) -> Option<u64> {
         match self {
-            Session::Unlocked(u) => u.auto_lock.map(|limit| {
-                limit
-                    .saturating_sub(u.last_activity.elapsed())
-                    .as_secs()
-            }),
+            Session::Unlocked(u) => u
+                .auto_lock
+                .map(|limit| limit.saturating_sub(u.last_activity.elapsed()).as_secs()),
             Session::Locked => None,
         }
     }

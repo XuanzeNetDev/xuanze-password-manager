@@ -25,7 +25,8 @@
         "maximizable": true,
         "fullscreen": false,
         "visible": false,
-        "backgroundColor": "#0f1115"
+        "backgroundColor": "#0f1115",
+        "devtools": false
       }
     ],
     "security": {

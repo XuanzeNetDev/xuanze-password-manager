@@ -67,4 +67,3 @@ pub fn derive_bound_key(
     combined.zeroize();
     key
 }
-

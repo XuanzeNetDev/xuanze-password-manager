@@ -177,7 +177,7 @@ pub struct IndexItem {
     pub kind: u8,
     /// 名称（原样，UI 显示用）。
     pub name: String,
-    /// 名称的小写副本（搜索用，不落盘也不影响外显）。
+    /// 名称的小写副本（搜索用）。它会随索引段一起加密落盘，见 FORMAT.md §5.1。
     pub lower_name: String,
     /// 用户名（原样）。
     pub username: String,
@@ -237,9 +237,7 @@ impl IndexItem {
             if ascii {
                 hay.len() >= needle.len() && contains_ascii_ci_fast(hay.as_bytes(), needle)
             } else {
-                hay.as_bytes()
-                    .windows(needle.len())
-                    .any(|w| w == needle)
+                hay.as_bytes().windows(needle.len()).any(|w| w == needle)
             }
         };
 
@@ -330,14 +328,13 @@ pub fn contains_ascii_ci_fast(hay: &[u8], needle: &[u8]) -> bool {
     let mut start = 0usize;
     while start <= end {
         let b = hay[start];
-        if b == first || b == first_upper {
-            if hay[start..start + needle.len()]
+        if (b == first || b == first_upper)
+            && hay[start..start + needle.len()]
                 .iter()
                 .zip(needle)
                 .all(|(h, n)| h.to_ascii_lowercase() == *n)
-            {
-                return true;
-            }
+        {
+            return true;
         }
         start += 1;
     }
@@ -370,6 +367,9 @@ impl From<&Entry> for IndexItem {
 
 #[cfg(test)]
 mod tests {
+    // 测试里 unwrap 是正常写法：出错就该 panic，不需要优雅降级。
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
     use super::*;
 
     fn sample() -> Entry {

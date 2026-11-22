@@ -67,7 +67,8 @@ fn print_help() {
 
 fn parse_flags(args: &[String]) -> (Vec<String>, std::collections::HashMap<String, Vec<String>>) {
     let mut positional = Vec::new();
-    let mut flags: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+    let mut flags: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
     let mut i = 0;
     while i < args.len() {
         let a = &args[i];
@@ -87,11 +88,13 @@ fn flag(flags: &std::collections::HashMap<String, Vec<String>>, key: &str) -> Op
     flags.get(key).and_then(|v| v.first()).cloned()
 }
 
-fn password(flags: &std::collections::HashMap<String, Vec<String>>, key: &str) -> Result<String, String> {
+fn password(
+    flags: &std::collections::HashMap<String, Vec<String>>,
+    key: &str,
+) -> Result<String, String> {
     match flag(flags, key) {
-        Some(p) if p == "-" => {
-            std::env::var("XZ_PASSWORD").map_err(|_| format!("--{key} - 要求设置环境变量 XZ_PASSWORD"))
-        }
+        Some(p) if p == "-" => std::env::var("XZ_PASSWORD")
+            .map_err(|_| format!("--{key} - 要求设置环境变量 XZ_PASSWORD")),
         Some(p) => Ok(p),
         None => Err(format!("缺少 --{key}")),
     }
@@ -113,20 +116,31 @@ fn now() -> i64 {
 
 fn cmd_init(args: &[String]) -> Result<(), xz_core::Error> {
     let (pos, flags) = parse_flags(args);
-    let path = pos.first().ok_or(xz_core::Error::Invalid("缺少 vault 路径"))?;
-    let pw = password(&flags, "password").map_err(|_| xz_core::Error::Invalid("缺少 --password"))?;
+    let path = pos
+        .first()
+        .ok_or(xz_core::Error::Invalid("缺少 vault 路径"))?;
+    let pw =
+        password(&flags, "password").map_err(|_| xz_core::Error::Invalid("缺少 --password"))?;
     let mut v = Vault::create(&pw, kdf_from(flag(&flags, "level")))?;
     v.save_as(PathBuf::from(path))?;
     println!("已创建 {path}");
+    // 这句不是客套。CLI 建的库不带机器绑定（pepper），而桌面端建库一定带，
+    // 两边的密钥派生材料不同 —— 所以这个文件桌面端打不开，反之亦然。
+    // 不说清楚，用户会以为是密码错了。
+    println!("注意：这是「独立库」，不带机器绑定。桌面端只能打开它自己创建的库，");
+    println!("      所以这个文件请用 xzc 自己读写，不要指望桌面端能打开。");
     Ok(())
 }
 
 fn cmd_list(args: &[String]) -> Result<(), xz_core::Error> {
     let (pos, flags) = parse_flags(args);
-    let path = pos.first().ok_or(xz_core::Error::Invalid("缺少 vault 路径"))?;
-    let pw = password(&flags, "password").map_err(|_| xz_core::Error::Invalid("缺少 --password"))?;
+    let path = pos
+        .first()
+        .ok_or(xz_core::Error::Invalid("缺少 vault 路径"))?;
+    let pw =
+        password(&flags, "password").map_err(|_| xz_core::Error::Invalid("缺少 --password"))?;
     let v = Vault::open(Path::new(path), &pw)?;
-    println!("{:<20} {:<10} {:<28} {}", "ID", "类型", "名称", "用户名");
+    println!("{:<20} {:<10} {:<28} 用户名", "ID", "类型", "名称");
     for item in v.index().all_sorted() {
         let kind = EntryKind::from_code(item.kind).map_or("?", kind_name);
         println!(
@@ -143,15 +157,23 @@ fn cmd_list(args: &[String]) -> Result<(), xz_core::Error> {
 
 fn cmd_find(args: &[String]) -> Result<(), xz_core::Error> {
     let (pos, flags) = parse_flags(args);
-    let path = pos.first().ok_or(xz_core::Error::Invalid("缺少 vault 路径"))?;
-    let pw = password(&flags, "password").map_err(|_| xz_core::Error::Invalid("缺少 --password"))?;
+    let path = pos
+        .first()
+        .ok_or(xz_core::Error::Invalid("缺少 vault 路径"))?;
+    let pw =
+        password(&flags, "password").map_err(|_| xz_core::Error::Invalid("缺少 --password"))?;
     let q = pos.get(1).cloned().unwrap_or_default();
     let v = Vault::open(Path::new(path), &pw)?;
     let t = std::time::Instant::now();
     let hits = search::search(v.index(), &q, 50);
     let elapsed = t.elapsed();
     for h in &hits {
-        println!("{:>4}  {:<28} {}", h.score, truncate(&h.item.name, 28), h.item.id);
+        println!(
+            "{:>4}  {:<28} {}",
+            h.score,
+            truncate(&h.item.name, 28),
+            h.item.id
+        );
     }
     println!(
         "{} 条结果，耗时 {:.3} ms（纯内存）",
@@ -163,8 +185,11 @@ fn cmd_find(args: &[String]) -> Result<(), xz_core::Error> {
 
 fn cmd_add(args: &[String]) -> Result<(), xz_core::Error> {
     let (pos, flags) = parse_flags(args);
-    let path = pos.first().ok_or(xz_core::Error::Invalid("缺少 vault 路径"))?;
-    let pw = password(&flags, "password").map_err(|_| xz_core::Error::Invalid("缺少 --password"))?;
+    let path = pos
+        .first()
+        .ok_or(xz_core::Error::Invalid("缺少 vault 路径"))?;
+    let pw =
+        password(&flags, "password").map_err(|_| xz_core::Error::Invalid("缺少 --password"))?;
     let name = flag(&flags, "name").ok_or(xz_core::Error::Invalid("缺少 --name"))?;
 
     let mut v = Vault::open(Path::new(path), &pw)?;
@@ -199,8 +224,11 @@ fn cmd_add(args: &[String]) -> Result<(), xz_core::Error> {
 
 fn cmd_show(args: &[String]) -> Result<(), xz_core::Error> {
     let (pos, flags) = parse_flags(args);
-    let path = pos.first().ok_or(xz_core::Error::Invalid("缺少 vault 路径"))?;
-    let pw = password(&flags, "password").map_err(|_| xz_core::Error::Invalid("缺少 --password"))?;
+    let path = pos
+        .first()
+        .ok_or(xz_core::Error::Invalid("缺少 vault 路径"))?;
+    let pw =
+        password(&flags, "password").map_err(|_| xz_core::Error::Invalid("缺少 --password"))?;
     let id = pos.get(1).ok_or(xz_core::Error::Invalid("缺少条目 id"))?;
     let v = Vault::open(Path::new(path), &pw)?;
     let e = v
@@ -214,15 +242,21 @@ fn cmd_show(args: &[String]) -> Result<(), xz_core::Error> {
     if flags.contains_key("reveal") {
         println!("秘密   {}", e.secret);
     } else {
-        println!("秘密   {}（加 --reveal 显示）", "*".repeat(e.secret.len().min(24)));
+        println!(
+            "秘密   {}（加 --reveal 显示）",
+            "*".repeat(e.secret.len().min(24))
+        );
     }
     Ok(())
 }
 
 fn cmd_rm(args: &[String]) -> Result<(), xz_core::Error> {
     let (pos, flags) = parse_flags(args);
-    let path = pos.first().ok_or(xz_core::Error::Invalid("缺少 vault 路径"))?;
-    let pw = password(&flags, "password").map_err(|_| xz_core::Error::Invalid("缺少 --password"))?;
+    let path = pos
+        .first()
+        .ok_or(xz_core::Error::Invalid("缺少 vault 路径"))?;
+    let pw =
+        password(&flags, "password").map_err(|_| xz_core::Error::Invalid("缺少 --password"))?;
     let id = pos.get(1).ok_or(xz_core::Error::Invalid("缺少条目 id"))?;
     let mut v = Vault::open(Path::new(path), &pw)?;
     v.remove(id)?;
@@ -233,8 +267,11 @@ fn cmd_rm(args: &[String]) -> Result<(), xz_core::Error> {
 
 fn cmd_passwd(args: &[String]) -> Result<(), xz_core::Error> {
     let (pos, flags) = parse_flags(args);
-    let path = pos.first().ok_or(xz_core::Error::Invalid("缺少 vault 路径"))?;
-    let old = password(&flags, "password").map_err(|_| xz_core::Error::Invalid("缺少 --password"))?;
+    let path = pos
+        .first()
+        .ok_or(xz_core::Error::Invalid("缺少 vault 路径"))?;
+    let old =
+        password(&flags, "password").map_err(|_| xz_core::Error::Invalid("缺少 --password"))?;
     let new = flag(&flags, "new-password").ok_or(xz_core::Error::Invalid("缺少 --new-password"))?;
     let mut v = Vault::open(Path::new(path), &old)?;
     v.change_password(&new, None)?;
@@ -245,8 +282,11 @@ fn cmd_passwd(args: &[String]) -> Result<(), xz_core::Error> {
 
 fn cmd_export(args: &[String]) -> Result<(), xz_core::Error> {
     let (pos, flags) = parse_flags(args);
-    let path = pos.first().ok_or(xz_core::Error::Invalid("缺少 vault 路径"))?;
-    let pw = password(&flags, "password").map_err(|_| xz_core::Error::Invalid("缺少 --password"))?;
+    let path = pos
+        .first()
+        .ok_or(xz_core::Error::Invalid("缺少 vault 路径"))?;
+    let pw =
+        password(&flags, "password").map_err(|_| xz_core::Error::Invalid("缺少 --password"))?;
     let v = Vault::open(Path::new(path), &pw)?;
     let mut out = String::from("name,kind,username,secret,url,tags\n");
     for item in v.index().all_sorted() {

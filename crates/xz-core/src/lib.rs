@@ -9,7 +9,13 @@
 //! 4. **开源友好** —— 无 GPL 依赖，全部 permissive 许可。
 
 #![deny(unsafe_code)]
-#![forbid(clippy::unwrap_used, clippy::expect_used)]
+// 生产代码里禁止 unwrap / expect —— 一个密码库不该因为一个 None 就 panic，
+// panic 会把栈上的密钥材料留在内存里，比返回错误难清理得多。
+//
+// 用 `deny` 而不是 `forbid`，因为 `forbid` 连子模块的 `allow` 都挡，
+// 而测试代码里 unwrap 是正常写法，硬要绕开反而写出更难读的东西。
+// 测试模块各自写了 `#![allow(clippy::unwrap_used)]`，生产代码一处都没有。
+#![deny(clippy::unwrap_used, clippy::expect_used)]
 
 pub mod binding;
 pub mod codec;

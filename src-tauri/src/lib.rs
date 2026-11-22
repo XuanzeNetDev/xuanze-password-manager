@@ -5,9 +5,9 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-pub mod machine;
 pub mod clipboard;
 pub mod commands;
+pub mod machine;
 pub mod session;
 
 use std::sync::Mutex;
@@ -62,6 +62,43 @@ pub fn run() -> Result<(), String> {
             #[cfg(debug_assertions)]
             if let Some(window) = _app.get_webview_window("main") {
                 window.open_devtools();
+            }
+
+            // 发布版关掉一切能让用户打开控制台的口子。
+            //
+            // 为什么这件事对密码管理器特别重要：这台界面里最敏感的东西
+            // 就是解密后的明文。控制台一开，`await invoke('list_all')` 就能
+            // 把整个库打印出来 —— 那之前所有的加密、绑定、擦除都白做了。
+            //
+            // 三层一起上：
+            //   1. Cargo.toml 的 tauri features 不含 `devtools` —— 编译期就没有这个能力
+            //   2. tauri.conf.json 的窗口 `devtools: false` —— 运行时不注册
+            //   3. 下面这段 —— 把 WebView2 自带的快捷键和右键菜单也堵掉
+            //
+            // 第 3 层是必须的：WebView2 自己认 F12 / Ctrl+Shift+I，
+            // 那是浏览器内核的行为，不受 Tauri 的 devtools 开关管。
+            #[cfg(not(debug_assertions))]
+            if let Some(window) = _app.get_webview_window("main") {
+                let _ = window.eval(
+                    r#"
+                    (() => {
+                      // 拦开发工具快捷键：F12、Ctrl+Shift+I/J/C、Ctrl+U（看源码）
+                      addEventListener('keydown', (e) => {
+                        const k = e.key.toLowerCase();
+                        if (e.key === 'F12') { e.preventDefault(); return false; }
+                        if (e.ctrlKey && e.shiftKey && ['i','j','c'].includes(k)) {
+                          e.preventDefault(); return false;
+                        }
+                        if (e.ctrlKey && k === 'u') { e.preventDefault(); return false; }
+                      }, true);
+
+                      // 关掉右键菜单 —— 里面的「检查」是另一条入口
+                      addEventListener('contextmenu', (e) => {
+                        e.preventDefault(); return false;
+                      }, true);
+                    })();
+                    "#,
+                );
             }
 
             // 关键：Windows 上的 WebView2 在高 DPI（本机 150%）下，

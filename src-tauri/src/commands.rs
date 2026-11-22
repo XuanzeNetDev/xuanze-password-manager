@@ -429,8 +429,7 @@ pub async fn vault_rekey(
     // 「内存是新密码、磁盘是旧密码」的状态，用户以为改成了，其实没有。
     std::fs::write(&path, &sealed).map_err(|e| format!("写不进去：{e}"))?;
 
-    // 密码变了，旧票据必须作废（否则下次还能用旧密钥开）
-    let id = {
+    {
         let mut guard = state.session.lock().map_err(err)?;
         let u = guard.un().ok_or("尚未解锁")?;
         let pepper = crate::machine::pepper()?;
@@ -438,10 +437,11 @@ pub async fn vault_rekey(
             .change_password_bound(&new_password, None, &pepper)
             .map_err(err)?;
         u.vault.set_path(PathBuf::from(path));
-        u.vault.vault_id()
-    };
+    }
+
+    // 密码变了，旧票据必须作废。只清不发 —— 票据里存的是主密钥，
+    // 旧密钥在这里已经不成立，发一张空的只会让人误读成「刚发了新票据」。
     crate::machine::clear_ticket();
-    crate::machine::save_ticket(&id, &[]).ok();
     Ok(())
 }
 
@@ -473,7 +473,12 @@ pub fn list_hot(state: State<'_, AppState>, limit: usize) -> Result<Vec<ItemView
     let mut guard = state.session.lock().map_err(err)?;
     let u = guard.un().ok_or("尚未解锁")?;
     u.last_activity = std::time::Instant::now();
-    Ok(u.vault.index().hot(limit).into_iter().map(ItemView::from).collect())
+    Ok(u.vault
+        .index()
+        .hot(limit)
+        .into_iter()
+        .map(ItemView::from)
+        .collect())
 }
 
 /// 全部条目（按名称排序）。
@@ -531,7 +536,10 @@ pub fn entry_get(state: State<'_, AppState>, id: String) -> Result<EntryView, St
     let mut guard = state.session.lock().map_err(err)?;
     let u = guard.un().ok_or("尚未解锁")?;
     u.last_activity = std::time::Instant::now();
-    let e = u.vault.get(&id).ok_or_else(|| format!("条目不存在：{id}"))?;
+    let e = u
+        .vault
+        .get(&id)
+        .ok_or_else(|| format!("条目不存在：{id}"))?;
     Ok(EntryView {
         id: e.id.clone(),
         kind: kind_to(e.kind).to_owned(),
@@ -545,7 +553,11 @@ pub fn entry_get(state: State<'_, AppState>, id: String) -> Result<EntryView, St
             .iter()
             .map(|f| FieldView {
                 name: f.name.clone(),
-                value: if f.secret { String::new() } else { f.value.clone() },
+                value: if f.secret {
+                    String::new()
+                } else {
+                    f.value.clone()
+                },
                 secret: f.secret,
             })
             .collect(),
@@ -568,7 +580,10 @@ pub fn entry_reveal(
     let mut guard = state.session.lock().map_err(err)?;
     let u = guard.un().ok_or("尚未解锁")?;
     u.last_activity = std::time::Instant::now();
-    let e = u.vault.get(&id).ok_or_else(|| format!("条目不存在：{id}"))?;
+    let e = u
+        .vault
+        .get(&id)
+        .ok_or_else(|| format!("条目不存在：{id}"))?;
     match field_index {
         None => Ok(e.secret.clone()),
         Some(i) => e
@@ -678,12 +693,14 @@ pub fn copy_to_clipboard(
     let mut guard = state.session.lock().map_err(err)?;
     guard.un().ok_or("尚未解锁")?;
 
-    // 敏感内容一律登记指纹，保证锁定时能被清掉
-    if sensitive {
-        clipboard::copy_with_ttl(&text, SECRET_TTL)
-    } else {
-        clipboard::copy_with_ttl(&text, SECRET_TTL)
-    }
+    // 敏感内容一律登记指纹，保证锁定时能被清掉。
+    //
+    // 原先这里按 `sensitive` 分两个分支，但两边调用完全一样 ——
+    // 因为 `copy_with_ttl` 本身就会登记指纹。留着那个分支只会让人
+    // 以为「非敏感内容不清剪贴板」，实际不是。参数保留是为了接口稳定，
+    // 语义上「调用方声明这段内容敏不敏感」，将来若要做差异化 TTL 用它。
+    let _ = sensitive;
+    clipboard::copy_with_ttl(&text, SECRET_TTL)
 }
 
 /// 复制热度榜第 N 条的密钥。`index` 从 0 开始。
@@ -775,7 +792,15 @@ pub fn export_xlsx(state: State<'_, AppState>, path: String) -> Result<usize, St
     let u = guard.un().ok_or("尚未解锁")?;
     u.last_activity = std::time::Instant::now();
 
-    let headers = ["名称", "类型", "账号", "密码 / 密钥", "网址", "专辑", "备注"];
+    let headers = [
+        "名称",
+        "类型",
+        "账号",
+        "密码 / 密钥",
+        "网址",
+        "专辑",
+        "备注",
+    ];
     let mut rows: Vec<Vec<String>> = Vec::new();
     for item in u.vault.index().all_sorted() {
         if let Some(e) = u.vault.get(&item.id) {

@@ -1229,6 +1229,23 @@ function setRow(label: string, hint: string | null, right: HTMLElement): HTMLEle
 
 function onKey(e: KeyboardEvent): void {
   const typing = /^(INPUT|TEXTAREA|SELECT)$/.test((e.target as HTMLElement).tagName);
+
+  // 先拦开发工具快捷键，再走业务快捷键。
+  //
+  // Rust 侧也注入了一份同样的拦截（lib.rs），这里是第二道。
+  // 为什么值得做两遍：这软件界面上最敏感的东西就是解密后的明文，
+  // 控制台一开，`await invoke('list_all')` 就把整个库打出来了。
+  // 多一层成本几乎为零，漏一层的代价是全部加密工作白做。
+  //
+  // 这段在开发版也会生效 —— 调试时用 Rust 侧自动打开的 devtools
+  // 就行，不靠快捷键。
+  const k = e.key.toLowerCase();
+  if (e.key === "F12" || (e.ctrlKey && e.shiftKey && /^[ijc]$/.test(k)) || (e.ctrlKey && k === "u")) {
+    e.preventDefault();
+    e.stopPropagation();
+    return;
+  }
+
   if (e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === "k" && state.unlocked) {
     e.preventDefault();
     document.querySelector<HTMLInputElement>(".search input")?.focus();
@@ -1295,6 +1312,10 @@ async function boot(): Promise<void> {
   document.body.prepend(h("div", { class: "flow" }, h("i"), h("i"), h("i")));
 
   document.addEventListener("keydown", onKey);
+
+  // 右键菜单里有个「检查」，是打开控制台的另一条路。直接禁掉。
+  // Rust 侧也拦了一份，同样是双保险。
+  document.addEventListener("contextmenu", (e) => e.preventDefault());
   let lastTouch = 0;
   const touch = () => {
     const now = Date.now();

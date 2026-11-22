@@ -1,7 +1,7 @@
 {
   "name": "xuanze-vault",
   "private": true,
-  "version": "0.1.0",
+  "version": "1.0.0",
   "type": "module",
   "description": "璇泽密钥库 — 极致性能的本地密钥/凭据管理器",
   "license": "Apache-2.0",

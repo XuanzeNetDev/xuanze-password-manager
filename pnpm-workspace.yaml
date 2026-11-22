@@ -1,0 +1,10 @@
+# pnpm 配置（pnpm 11 起，除认证类的设置都放在这里，不再是 .npmrc）。
+#
+# allowBuilds：只放行 esbuild 的安装脚本（它要下载对应平台的二进制）。
+# 其余依赖的构建脚本一律不执行 —— 一个安全软件不该让任意依赖在
+# 安装时跑任意代码。
+#
+# 早先这里是一份 pnpm init 留下未填的占位（allowBuilds: esbuild: set this to
+# true or false），不是合法配置，导致 CI 的 setup-node 解析失败。
+allowBuilds:
+  esbuild: true

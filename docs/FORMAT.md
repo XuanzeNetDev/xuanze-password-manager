@@ -157,8 +157,8 @@ verify_block = nonce(12) || AES-256-GCM(verify_key, nonce, "xzvlt/v1/verify-ok",
 | 档位 | mem_kib | iterations | parallelism | 本机实测耗时 |
 |---|---:|---:|---:|---:|
 | `light` | 19 456 | 2 | 1 | ≈ 16 ms |
-| `balanced`（默认） | 65 536 | 3 | 4 | ≈ 85 ms |
-| `paranoid` | 262 144 | 4 | 4 | ≈ 510 ms |
+| `balanced` | 65 536 | 3 | 4 | ≈ 85 ms |
+| `paranoid`（默认） | 262 144 | 4 | 4 | ≈ 510 ms |
 
 实测环境：Windows / Ryzen（32 逻辑核）/ release 构建。
 具体数字随机器浮动，量级是关键：**KDF 是打开 vault 唯一值得等的部分**。
@@ -241,7 +241,7 @@ verify_block = nonce(12) || AES-256-GCM(verify_key, nonce, "xzvlt/v1/verify-ok",
 ## 6. 打开流程（读取端）
 
 ```
-1. 读文件 → 校验长度 ≥ 59
+1. 读文件 → 校验长度 ≥ 75（`HEADER_LEN` 71 + 4 字节 `index_len`）
 2. FileHeader::parse(前 71 字节)
    ├─ magic 不符        → NotAVault
    ├─ version > 支持版本 → UnsupportedVersion

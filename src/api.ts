@@ -115,6 +115,12 @@ export const api = {
   copy: (text: string, sensitive: boolean) =>
     invoke<void>("copy_to_clipboard", { text, sensitive }),
   copyByHeat: (index: number) => invoke<string>("copy_secret_by_heat", { index }),
+  /** 导出为 xlsx。需要再输一次主密码 —— 导出的是明文。 */
+  exportXlsx: (path: string, password: string) =>
+    invoke<number>("export_xlsx", { path, password }),
+  /** 从 xlsx 导入。返回 { imported, skipped }。 */
+  importXlsx: (path: string, password: string) =>
+    invoke<{ imported: number; skipped: number }>("import_xlsx", { path, password }),
 
   touch: () => invoke<void>("touch_activity"),
   autolockCheck: () => invoke<boolean>("autolock_check"),

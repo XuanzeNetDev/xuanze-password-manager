@@ -7,6 +7,7 @@
  */
 
 import { api as realApi, errText, kindKey, type EntryView, type ItemView } from "./api";
+import { open, save } from "@tauri-apps/plugin-dialog";
 import { h, icon, replaceChildren } from "./dom";
 import logoUrl from "./assets/logo.png";
 import { applyTheme, getTheme, watchSystemTheme, type Theme } from "./theme";
@@ -1153,6 +1154,28 @@ function openSettings(): void {
         rekeyBtn,
       ),
       setRow(
+        "导入 / 导出",
+        "Excel 表格，按专辑分表。导出的是明文，两边都需要再输一次主密码。",
+        h("div", { class: "row2" },
+          (() => {
+            const b = h("button", { class: "btn", type: "button" }, "导入");
+            b.addEventListener("click", () => {
+              closeModal();
+              openImport();
+            });
+            return b;
+          })(),
+          (() => {
+            const b = h("button", { class: "btn", type: "button" }, "导出");
+            b.addEventListener("click", () => {
+              closeModal();
+              openExport();
+            });
+            return b;
+          })(),
+        ),
+      ),
+      setRow(
         "退出登录",
         "回到密码界面。数据不会丢，下次输入密码即可继续。",
         (() => {
@@ -1181,7 +1204,188 @@ function openSettings(): void {
   );
 }
 
+/**
+ * 从 Excel 导入。格式与导出严格对称。
+ *
+ * 表头必须是导出的那一套（名称/类型/账号/密码/网址/专辑/备注/更新时间/自定义字段），
+ * 每张工作表对应一个专辑。表头对不上就跳过整张表 —— 不去猜列序，
+ * 猜错会把密码塞进用户名。
+ *
+ * 同样要求再输一次主密码：导入会改动库内容。
+ */
+function openImport(): void {
+  const pw = h("input", {
+    class: "in",
+    type: "password",
+    attrs: { placeholder: "主密码", autocomplete: "off" },
+  }) as HTMLInputElement;
+  const msg = h("div", { class: "err" });
+
+  let busy = false;
+  const cancel = h("button", { class: "btn", type: "button" }, "取消");
+  cancel.addEventListener("click", () => closeModal());
+  const go = h("button", { class: "btn primary", type: "button" }, "选择文件并导入");
+
+  go.addEventListener("click", async () => {
+    if (busy) return;
+    msg.textContent = "";
+    if (!pw.value) {
+      msg.textContent = "请输入主密码";
+      pw.focus();
+      return;
+    }
+
+    busy = true;
+    go.disabled = true;
+    go.textContent = "处理中…";
+    try {
+      const picked = await open({
+        title: "选择要导入的 Excel",
+        multiple: false,
+        directory: false,
+        filters: [{ name: "Excel 表格", extensions: ["xlsx"] }],
+      });
+      const path = typeof picked === "string" ? picked : null;
+      if (!path) {
+        busy = false;
+        go.disabled = false;
+        go.textContent = "选择文件并导入";
+        return;
+      }
+
+      const r = await api.importXlsx(path, pw.value);
+      closeModal();
+      await reloadList();
+      await preloadAll();
+      renderMain();
+      if (r.imported === 0) {
+        toast("没有导入任何条目", `跳过 ${r.skipped} 条（重复或格式不符）`);
+      } else {
+        toast(`已导入 ${r.imported} 条`, r.skipped > 0 ? `跳过 ${r.skipped} 条` : "");
+      }
+    } catch (e) {
+      msg.textContent = errText(e);
+      busy = false;
+      go.disabled = false;
+      go.textContent = "选择文件并导入";
+    }
+  });
+
+  pw.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") void go.click();
+  });
+
+  openModal(
+    "导入 Excel",
+    [
+      h(
+        "div",
+        { class: "shint" },
+        "文件格式必须与本软件导出的表格一致：表头固定，每张工作表对应一个专辑。",
+      ),
+      pw,
+      msg,
+      h(
+        "div",
+        { class: "shint" },
+        "名称和账号都相同的条目会被跳过，同一个文件可以重复导入。",
+      ),
+    ],
+    [cancel, go],
+  );
+  pw.focus();
+}
+
+
+/**
+ * 导出为 Excel。**必须再输一次主密码**。
+ *
+ * 这是唯一一个能把全部密钥一次性倒出来的入口，导出的是明文。
+ * 只判断「已解锁」就放行，等于给同机任何进程开一扇门 ——
+ * 重输密码把这一步拉回「只有知道主密码的人能做」。
+ *
+ * 流程：输密码 → 选位置（系统另存为）→ 写盘。
+ * 三张表起步：「全部」+ 每个专辑一张。
+ */
+function openExport(): void {
+  const pw = h("input", {
+    class: "in",
+    type: "password",
+    attrs: { placeholder: "主密码", autocomplete: "off" },
+  }) as HTMLInputElement;
+  const msg = h("div", { class: "err" });
+
+  let busy = false;
+  const cancel = h("button", { class: "btn", type: "button" }, "取消");
+  cancel.addEventListener("click", () => closeModal());
+  const go = h("button", { class: "btn primary", type: "button" }, "选择位置并导出");
+
+  go.addEventListener("click", async () => {
+    if (busy) return;
+    msg.textContent = "";
+    if (!pw.value) {
+      msg.textContent = "请输入主密码";
+      pw.focus();
+      return;
+    }
+
+    busy = true;
+    go.disabled = true;
+    go.textContent = "处理中…";
+    try {
+      // 先让用户选位置。取消就什么都不做 —— 不要先输密码再告诉人家取消了。
+      const path = await save({
+        title: "导出为 Excel",
+        defaultPath: `璇泽密钥库-${new Date().toISOString().slice(0, 10)}.xlsx`,
+        filters: [{ name: "Excel 表格", extensions: ["xlsx"] }],
+      });
+      if (!path) {
+        busy = false;
+        go.disabled = false;
+        go.textContent = "选择位置并导出";
+        return;
+      }
+
+      const n = await api.exportXlsx(path, pw.value);
+      closeModal();
+      toast(`已导出 ${n} 条`, "文件是明文，用完请及时删除");
+    } catch (e) {
+      msg.textContent = errText(e);
+      busy = false;
+      go.disabled = false;
+      go.textContent = "选择位置并导出";
+    }
+  });
+
+  for (const el of [pw]) {
+    el.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") void go.click();
+    });
+  }
+
+  openModal(
+    "导出 Excel",
+    [
+      h(
+        "div",
+        { class: "shint" },
+        "导出的文件是明文，任何拿到它的人都能看到全部账号密码。",
+      ),
+      pw,
+      msg,
+      h(
+        "div",
+        { class: "shint" },
+        "按专辑分表：每个专辑一张工作表，另有一张包含全部条目。",
+      ),
+    ],
+    [cancel, go],
+  );
+  pw.focus();
+}
+
 /** 关于我们：产品信息 + 开源声明。 */
+
 function openAbout(): void {
   const ok = h("button", { class: "btn primary", type: "button" }, "知道了");
   ok.addEventListener("click", () => closeModal());

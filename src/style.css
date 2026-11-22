@@ -1734,3 +1734,9 @@ textarea.in {
     animation: none;
   }
 }
+/* 设置里一行放两个按钮（导入 / 导出） */
+.row2 {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}

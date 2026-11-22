@@ -3,6 +3,8 @@
   "description": "璇泽密钥库默认权限",
   "windows": ["main"],
   "permissions": [
-    "core:default"
+    "core:default",
+    "dialog:allow-save",
+    "dialog:allow-open"
   ]
 }

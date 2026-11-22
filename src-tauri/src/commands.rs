@@ -194,10 +194,14 @@ fn new_id() -> String {
 fn kdf_from(level: Option<&str>) -> KdfParams {
     match level {
         Some("light") => KdfParams::light(),
-        Some("paranoid") => KdfParams::paranoid(),
         Some("balanced") => KdfParams::balanced(),
-        // 默认最高档：宁可开库慢一两秒，也不留一个好爆破的库
-        _ => KdfParams::maximum(),
+        Some("maximum") => KdfParams::maximum(),
+        // 默认 paranoid（256 MiB × 4 轮）。
+        //
+        // 这里以前是 maximum（1 GiB），而前端建库时显式传 "paranoid" ——
+        // 两个「默认」不一样，文档里又各写各的，三处对不上。
+        // 现在统一：不指定就用 paranoid，想更强就显式传 "maximum"。
+        _ => KdfParams::paranoid(),
     }
 }
 
@@ -765,4 +769,180 @@ pub fn autolock_check(state: State<'_, AppState>) -> Result<bool, String> {
         clipboard::purge_if_ours();
     }
     Ok(locked)
+}
+
+// ───────────────────────────── 导出 ─────────────────────────────
+
+/// 导出为 xlsx。**明文**，所以必须再过一次主密码。
+///
+/// 为什么导出前要重输密码：这是唯一一个能把全部密钥一次性倒出来的入口。
+/// 只要「已解锁」就放行，等于给同机任何进程开了一扇门 —— 而导出的是明文，
+/// 拿到就是全部。重输密码把这一步拉回「只有知道主密码的人能做」。
+///
+/// 按专辑分工作表：左侧栏每个标签一张表，外加一张「全部」。
+/// 一条条目属于多个专辑时，会在每张对应的表里各出现一次，与界面筛选行为一致。
+#[tauri::command]
+pub async fn export_xlsx(
+    state: State<'_, AppState>,
+    path: String,
+    password: String,
+) -> Result<usize, String> {
+    if password.is_empty() {
+        return Err("请输入主密码".to_owned());
+    }
+
+    // 先在锁内取明文快照并校验密码，然后立刻放锁 —— 写盘要几十毫秒，
+    // 不该把整个会话卡在那里。
+    let (sheets, total) = {
+        let mut guard = state.session.lock().map_err(err)?;
+        let u = guard.un().ok_or("尚未解锁")?;
+        u.last_activity = std::time::Instant::now();
+        u.vault
+            .verify_password(&password)
+            .map_err(|_| "主密码不对".to_owned())?;
+
+        let mut all: Vec<xz_core::entry::Entry> = Vec::new();
+        for item in u.vault.index().all_sorted() {
+            if let Some(e) = u.vault.get(&item.id) {
+                all.push(e.clone());
+            }
+        }
+        let total = all.len();
+
+        // 「全部」表
+        let mut sheets = vec![crate::export::Sheet {
+            name: "全部".to_owned(),
+            headers: crate::export::HEADERS.to_vec(),
+            rows: all.iter().map(crate::export::entry_to_row).collect(),
+        }];
+
+        // 每个专辑一张表
+        let mut tags: Vec<String> = Vec::new();
+        for e in &all {
+            for t in &e.tags {
+                if !tags.iter().any(|x| x == t) {
+                    tags.push(t.clone());
+                }
+            }
+        }
+        tags.sort();
+        for tag in tags {
+            let rows: Vec<Vec<String>> = all
+                .iter()
+                .filter(|e| e.tags.iter().any(|t| t == &tag))
+                .map(crate::export::entry_to_row)
+                .collect();
+            if !rows.is_empty() {
+                sheets.push(crate::export::Sheet {
+                    name: tag,
+                    headers: crate::export::HEADERS.to_vec(),
+                    rows,
+                });
+            }
+        }
+        (sheets, total)
+    };
+
+    // 写盘放到阻塞线程池：几万条可能上百毫秒，别占住主线程
+    let path_buf = std::path::PathBuf::from(path);
+    tauri::async_runtime::spawn_blocking(move || crate::export::write_xlsx(&path_buf, &sheets))
+        .await
+        .map_err(|e| format!("导出任务失败：{e}"))??;
+
+    Ok(total)
+}
+
+/// 从 xlsx 导入。需要主密码 —— 导入会改动库内容。
+///
+/// 格式与导出严格对称：每张工作表是一张专辑，首行必须是固定表头。
+/// 表头对不上就跳过整张表，不去猜列序 —— 猜错会把密码塞进用户名。
+///
+/// 去重规则：**名称 + 账号都相同**视为同一条，跳过不导入。
+/// 这样同一个文件重复导入两次不会翻倍，也不会因为密码改过而重复。
+#[tauri::command]
+pub async fn import_xlsx(
+    state: State<'_, AppState>,
+    path: String,
+    password: String,
+) -> Result<ImportSummary, String> {
+    if password.is_empty() {
+        return Err("请输入主密码".to_owned());
+    }
+
+    // 读文件要几十毫秒，放锁外
+    let path_buf = std::path::PathBuf::from(path);
+    let sheets = tauri::async_runtime::spawn_blocking(move || crate::export::read_xlsx(&path_buf))
+        .await
+        .map_err(|e| format!("读取任务失败：{e}"))??;
+
+    let mut guard = state.session.lock().map_err(err)?;
+    let u = guard.un().ok_or("尚未解锁")?;
+    u.last_activity = std::time::Instant::now();
+    u.vault
+        .verify_password(&password)
+        .map_err(|_| "主密码不对".to_owned())?;
+
+    let now = now_ts();
+    let mut imported = 0usize;
+    let mut skipped = 0usize;
+
+    // 已存在的 (名称, 账号) 组合，用于去重
+    let mut existing: std::collections::HashSet<(String, String)> =
+        std::collections::HashSet::new();
+    for item in u.vault.index().all_sorted() {
+        if let Some(e) = u.vault.get(&item.id) {
+            existing.insert((e.name.clone(), e.username.clone()));
+        }
+    }
+
+    for sheet in &sheets {
+        for row in &sheet.rows {
+            let Some(p) = crate::export::row_to_entry(row, &sheet.name) else {
+                skipped += 1;
+                continue;
+            };
+            if existing.contains(&(p.name.clone(), p.username.clone())) {
+                skipped += 1;
+                continue;
+            }
+            let entry = xz_core::entry::Entry {
+                id: new_id(),
+                kind: p.kind,
+                name: p.name.clone(),
+                username: p.username.clone(),
+                secret: p.secret,
+                url: p.url,
+                fields: Vec::new(),
+                tags: p.tags,
+                notes: p.notes,
+                created_at: now,
+                updated_at: now,
+                expires_at: 0,
+                use_count: 0,
+                last_used_at: 0,
+            };
+            match u.vault.insert(entry) {
+                Ok(_) => {
+                    existing.insert((p.name, p.username.clone()));
+                    imported += 1;
+                }
+                Err(_) => skipped += 1,
+            }
+        }
+    }
+
+    if imported > 0 {
+        u.vault.save().map_err(|e| format!("导入后保存失败：{e}"))?;
+    }
+
+    Ok(ImportSummary { imported, skipped })
+}
+
+/// 导入结果，给前端提示用。
+#[derive(serde::Serialize)]
+pub struct ImportSummary {
+    /// 成功导入的条数。
+    pub imported: usize,
+    /// 跳过的条数（重复、空行、或表头不符）。
+    pub skipped: usize,
 }

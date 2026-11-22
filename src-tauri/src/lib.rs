@@ -7,6 +7,7 @@
 
 pub mod clipboard;
 pub mod commands;
+pub mod export;
 pub mod machine;
 pub mod session;
 
@@ -26,6 +27,9 @@ pub struct AppState {
 /// Tauri 初始化失败或事件循环异常退出时返回错误字符串。
 pub fn run() -> Result<(), String> {
     tauri::Builder::default()
+        // 导出要用系统「另存为」对话框选位置。没有这个插件就只能在代码里
+        // 猜一个路径写下去 —— 用户既不知道文件在哪，也没法取消。
+        .plugin(tauri_plugin_dialog::init())
         .manage(AppState {
             session: Mutex::new(Session::locked()),
         })
@@ -53,6 +57,8 @@ pub fn run() -> Result<(), String> {
             commands::touch_activity,
             commands::autolock_check,
             commands::ui_ready,
+            commands::export_xlsx,
+            commands::import_xlsx,
         ])
         .setup(|_app| {
             use tauri::Manager as _;

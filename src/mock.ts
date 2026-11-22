@@ -149,6 +149,9 @@ export const mockApi = {
     return e?.name ?? "（无）";
   },
 
+  exportXlsx: async () => store.length,
+  importXlsx: async () => ({ imported: 0, skipped: 0 }),
+
   touch: async () => {},
   autolockCheck: async () => false,
 };

@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 
 /// Argon2 参数档位。
 ///
-/// 数字是「内存 KiB / 迭代次数 / 并行度」。默认 [`KdfParams::balanced`]。
+/// 数字是「内存 KiB / 迭代次数 / 并行度」。默认 [`KdfParams::paranoid`]。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, zeroize::Zeroize)]
 pub struct KdfParams {
     /// 内存开销，单位 KiB。RFC 9106 第二推荐值 64 MiB。
@@ -56,7 +56,7 @@ impl KdfParams {
         }
     }
 
-    /// 默认档：64 MiB，3 次，4 lanes。OWASP 2024 推荐配置。
+    /// 64 MiB，3 次，4 lanes。OWASP 2024 推荐配置。
     #[must_use]
     pub const fn balanced() -> Self {
         Self {

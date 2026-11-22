@@ -315,17 +315,72 @@ pub fn pepper() -> Result<Vec<u8>, String> {
 }
 
 /// 尽力把文件权限收紧到只有当前用户可读。
+///
+/// 用当前进程的实际令牌取 SID，不读 `USERNAME` 环境变量 ——
+/// 那个变量任何进程都能在拉起子进程前改掉，改完这里就会给
+/// 「攻击者指定的那个用户名」授权，等于把保护反着用。
+///
+/// 失败也不影响加密强度，只是少一层文件系统保护。
 fn restrict_acl(path: &std::path::Path) {
-    let user = std::env::var("USERNAME").unwrap_or_else(|_| "*S-1-1-0".to_owned());
-    // 失败也不影响加密强度，只是少一层文件系统保护
+    let Some(sid) = current_user_sid() else {
+        return;
+    };
     let _ = std::process::Command::new("icacls")
         .arg(path)
         .arg("/inheritance:r")
         .arg("/grant:r")
-        .arg(format!("{user}:F"))
+        // SID 形如 S-1-5-21-...，只含数字与连字符，不含空格和引号，
+        // 不会有命令行解析问题。
+        .arg(format!("{sid}:F"))
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status();
+}
+
+/// 取当前进程所属用户的 SID 字符串。
+fn current_user_sid() -> Option<String> {
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
+    use windows_sys::Win32::Security::{GetTokenInformation, TokenUser, TOKEN_QUERY, TOKEN_USER};
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    // SAFETY: 全程只用本函数持有的句柄；每个 Open 都有对应的 Close，
+    // 缓冲区通过两段式调用（先问长度、再分配）保证足够大。
+    unsafe {
+        let mut token: HANDLE = std::ptr::null_mut();
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
+            return None;
+        }
+
+        let mut len: u32 = 0;
+        GetTokenInformation(token, TokenUser, std::ptr::null_mut(), 0, &mut len);
+        if len == 0 {
+            CloseHandle(token);
+            return None;
+        }
+
+        let mut buf = vec![0u8; len as usize];
+        let ok = GetTokenInformation(token, TokenUser, buf.as_mut_ptr().cast(), len, &mut len);
+        CloseHandle(token);
+        if ok == 0 {
+            return None;
+        }
+
+        let token_user = &*(buf.as_ptr() as *const TOKEN_USER);
+        let mut raw: *mut u16 = std::ptr::null_mut();
+        if ConvertSidToStringSidW(token_user.User.Sid, &mut raw) == 0 {
+            return None;
+        }
+
+        let mut n = 0usize;
+        while *raw.add(n) != 0 {
+            n += 1;
+        }
+        let s = String::from_utf16_lossy(std::slice::from_raw_parts(raw, n));
+        // LocalFree 用进程堆的通用释放函数
+        windows_sys::Win32::Foundation::LocalFree(raw.cast());
+        Some(s)
+    }
 }
 
 /// DPAPI 加密（当前用户）。

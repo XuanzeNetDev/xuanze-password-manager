@@ -52,8 +52,6 @@ pub fn run() -> Result<(), String> {
             commands::copy_secret_by_heat,
             commands::touch_activity,
             commands::autolock_check,
-            commands::export_csv,
-            commands::export_xlsx,
             commands::ui_ready,
         ])
         .setup(|_app| {

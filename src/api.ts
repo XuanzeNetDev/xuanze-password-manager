@@ -118,8 +118,6 @@ export const api = {
 
   touch: () => invoke<void>("touch_activity"),
   autolockCheck: () => invoke<boolean>("autolock_check"),
-  exportCsv: (path: string) => invoke<number>("export_csv", { path }),
-  exportXlsx: (path: string) => invoke<number>("export_xlsx", { path }),
 };
 
 /** 把后端抛出的错误转成一句人话。 */

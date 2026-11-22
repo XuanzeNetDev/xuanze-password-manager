@@ -38,6 +38,8 @@ const state = {
   /** 当前表格里要显示的条目。 */
   items: [] as ItemView[],
   full: new Map<string, EntryView>(),
+  /** 已取出的明文。只在 shown 里有条目时才有值，锁库/隐藏时清掉。 */
+  secret: new Map<string, string>(),
   selected: null as string | null,
   query: "",
   dirty: false,
@@ -205,8 +207,13 @@ function renderRegister(): void {
     }, 900);
 
     try {
-      // 加密强度用默认档，不给用户出选择题
-      await api.create(p1.value, "maximum");
+      // 用 paranoid 档（256 MiB × 4 轮），不给用户出选择题。
+      //
+      // 不用 maximum（1 GiB × 3 轮）：打开时瞬间占 1 GiB 内存，
+      // 对日常使用没必要。256 MiB 已经让 GPU 破解很不划算，
+      // 而内存峰值降到四分之一，老一点的轻薄本也能顺畅跑。
+      // 强密码 + 本机绑定才是主要防线，KDF 只是最后一道。
+      await api.create(p1.value, "paranoid");
       window.clearInterval(timer);
       stepEl.textContent = steps[steps.length - 1] ?? "";
 
@@ -305,6 +312,7 @@ async function enter(): Promise<void> {
   state.selected = null;
   state.query = "";
   state.shown.clear();
+  state.secret.clear();
   state.full.clear();
   await reload();
   swapScreen(() => renderMain());
@@ -660,15 +668,20 @@ function renderCell(e: EntryView, c: Col): HTMLElement {
   }
   if (c.key === "secret") {
     const shown = state.shown.has(e.id);
-    const text = shown && state.full.get(e.id) ? null : null;
-    void text;
+    // 已取过的明文走缓存，不重复发 IPC。
+    //
+    // 原先这里每次渲染都无条件调 `api.reveal()`，而 `state.full` 存的是
+    // EntryView —— 后端刻意不在里面放 secret，所以那行 `const text = ...`
+    // 从头到尾都是死代码。现在明文单独放 state.secret，锁库和隐藏时能精确清掉。
+    const cached = state.secret.get(e.id);
     const cell = h(
       "div",
       { class: `td mono secret-cell${shown ? " on" : ""}` },
-      shown ? "加载中…" : "•••••••",
+      shown ? (cached ?? "加载中…") : "•••••••",
     );
-    if (shown) {
+    if (shown && cached === undefined) {
       void api.reveal(e.id).then((v) => {
+        state.secret.set(e.id, v);
         cell.textContent = v;
       }).catch(() => {
         cell.textContent = "—";
@@ -685,16 +698,24 @@ function renderCell(e: EntryView, c: Col): HTMLElement {
       cell.classList.toggle("on", willShow);
       if (!willShow) {
         cell.textContent = "•••••••";
+        // 隐藏就把明文从内存里拿掉，不留到下次。
+        state.secret.delete(e.id);
       } else {
-        cell.textContent = "加载中…";
-        void api
-          .reveal(e.id)
-          .then((v) => {
-            cell.textContent = v;
-          })
-          .catch(() => {
-            cell.textContent = "—";
-          });
+        const cached = state.secret.get(e.id);
+        if (cached !== undefined) {
+          cell.textContent = cached;
+        } else {
+          cell.textContent = "加载中…";
+          void api
+            .reveal(e.id)
+            .then((v) => {
+              state.secret.set(e.id, v);
+              cell.textContent = v;
+            })
+            .catch(() => {
+              cell.textContent = "—";
+            });
+        }
       }
       replaceChildren(eye, [icon(willShow ? "eyeOff" : "eye")]);
       eye.title = willShow ? "隐藏" : "显示";
@@ -743,7 +764,7 @@ async function copySecret(id: string, name: string): Promise<void> {
   try {
     await api.copy(await api.reveal(id), true);
     void api.recordUse(id);
-    toast(`已复制：${name}`, "25 秒后清除剪贴板");
+    toast(`已复制：${name}`, "15 秒后清除剪贴板");
   } catch (e) {
     toast(errText(e));
   }
@@ -786,6 +807,7 @@ async function doLock(): Promise<void> {
     state.items = [];
     state.full.clear();
     state.shown.clear();
+    state.secret.clear();
     state.entered = false;
     swapScreen(() => renderLock("已锁定", true));
   } catch (e) {
@@ -1266,7 +1288,7 @@ function onKey(e: KeyboardEvent): void {
     const idx = Number.parseInt(e.key, 10) - 1;
     void (async () => {
       try {
-        toast(`已复制：${await api.copyByHeat(idx)}`, "25 秒后清除剪贴板");
+        toast(`已复制：${await api.copyByHeat(idx)}`, "15 秒后清除剪贴板");
         await reloadList();
         await preloadAll();
         renderMain();
@@ -1337,6 +1359,7 @@ async function boot(): Promise<void> {
         state.selected = null;
         state.full.clear();
         state.shown.clear();
+        state.secret.clear();
         swapScreen(() => renderLock("闲置超时，已自动锁定", true));
         return;
       }

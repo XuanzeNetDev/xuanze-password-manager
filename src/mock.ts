@@ -151,6 +151,4 @@ export const mockApi = {
 
   touch: async () => {},
   autolockCheck: async () => false,
-  exportCsv: async () => store.length,
-  exportXlsx: async () => store.length,
 };

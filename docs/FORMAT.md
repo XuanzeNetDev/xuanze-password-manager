@@ -256,7 +256,18 @@ verify_block = nonce(12) || AES-256-GCM(verify_key, nonce, "xzvlt/v1/verify-ok",
 ```
 
 第 6 步是**原子保存**。断电或崩溃时，磁盘上要么是完整旧文件、要么是完整新文件，
-不会出现半截 vault。rename 在 Windows 上由 `std` 走 ReplaceFile 语义。
+不会出现半截 vault。
+
+落在文件系统上是 `std::fs::rename`，它在 Windows 上走
+`MoveFileExW(MOVEFILE_REPLACE_EXISTING)`。需要厘清两点：
+
+- 它**不是** `ReplaceFile`。没有备份副本、没有事务语义，就是一次替换。
+- 目标文件正被别的进程占着（杀软扫描、同步盘、索引服务）时，它会**直接失败**
+  而不是重试。这是可接受的行为：失败会返回错误，用户看到「写不进去」，
+  旧文件仍然完好。反过来，如果它静默成功一半，才是灾难。
+
+临时文件名带 16 字节随机后缀，且用 `create_new(true)` 占位 —— 后者能挡住
+「攻击者预先在同目录放一个同名符号链接」这类劫持。
 
 保存**不重跑 KDF**。这是「极致性能」的核心：主密钥已经在内存里，
 保存只是序列化 + AES，1 万条约 40 ms。

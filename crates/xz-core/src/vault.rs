@@ -578,7 +578,11 @@ pub struct VaultStats {
 }
 
 /// 原子写文件。
-fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
+///
+/// 公开出来的原因：改密码要整库重写，那是全流程里最不能掉电崩坏的时刻。
+/// 上层如果自己调 `std::fs::write`，就绕过了随机后缀 + create_new 占位 +
+/// 落盘同步这一整套措施，一次断电能把整个库写坏 —— 而那时候旧密码已经没用了。
+pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     use std::io::Write;
 
     let dir = path.parent().unwrap_or_else(|| Path::new("."));

@@ -136,7 +136,6 @@ export const api = {
   copy: (text: string, sensitive: boolean) =>
     invoke<void>("copy_to_clipboard", { text, sensitive }),
   copyByHeat: (index: number) => invoke<string>("copy_secret_by_heat", { index }),
-  /** 导出为 xlsx。需要再输一次主密码 —— 导出的是明文。 */
   /** 免密码模式是否已开启。 */
   autoUnlockStatus: () => invoke<boolean>("auto_unlock_status"),
   /** 开启免密码模式（需主密码）。 */
@@ -145,13 +144,24 @@ export const api = {
   /** 关闭免密码模式（需主密码）。 */
   disableAutoUnlock: (password: string) =>
     invoke<void>("disable_auto_unlock", { password }),
-  exportXlsx: (path: string, password: string) =>
-    invoke<number>("export_xlsx", { path, password }),
-  /** 从 xlsx 导入。返回 { imported, skipped, errors }。 */
-  importXlsx: (path: string, password: string) =>
-    invoke<{ imported: number; skipped: number; errors: string[] }>("import_xlsx", {
+  /**
+   * 导出加密备份（`.xzbak`）。
+   *
+   * 里面是完整的 xlsx，但外面用 Argon2id + AES-256-GCM 包了一层：
+   * 磁盘上不会出现明文表格。`backupPassword` 是这个文件的锁，不能为空。
+   */
+  exportBackup: (path: string, password: string, backupPassword: string) =>
+    invoke<number>("export_backup", { path, password, backupPassword }),
+  /**
+   * 从 `.xzbak` 或普通 `.xlsx` 导入。
+   *
+   * 选中加密备份时必须给 `backupPassword`；普通表格留空即可。
+   */
+  importBackup: (path: string, password: string, backupPassword?: string) =>
+    invoke<{ imported: number; skipped: number; errors: string[] }>("import_backup", {
       path,
       password,
+      backupPassword: backupPassword && backupPassword.length > 0 ? backupPassword : null,
     }),
 
   touch: () => invoke<void>("touch_activity"),

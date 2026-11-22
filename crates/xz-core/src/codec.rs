@@ -116,11 +116,17 @@ impl FileHeader {
     }
 }
 
-/// 从文件全量字节里切出三段密文。
+/// 从文件全量字节里切出的各段密文。
 ///
 /// 分离出来是因为 Tauri 层可以「只读头」判断是否本产品文件，
 /// 不必把整个文件读进内存。
 pub struct SealedParts<'a> {
+    /// 绑定块（仅 v3 及以后有）。
+    ///
+    /// 里面是「本机随机串」的密文，用硬件指纹派生的密钥封装。
+    /// 它让库文件自己带着一份绑定材料的副本 —— 重装系统、`%APPDATA%` 被清空时
+    /// 靠它把库救回来，而不需要一份明文 Excel。
+    pub bind: Option<&'a [u8]>,
     /// 索引密文。
     pub index: &'a [u8],
     /// 正文密文。
@@ -130,7 +136,15 @@ pub struct SealedParts<'a> {
 }
 
 /// 切分文件。
+///
+/// 布局随 `version` 变化：
+///
+/// ```text
+/// v2: 头 | u32 index_len | index | u32 body_len | body | verify(46)
+/// v3: 头 | u32 bind_len  | bind  | u32 index_len | index | u32 body_len | body | verify(46)
+/// ```
 pub fn split_sealed(bytes: &[u8]) -> Result<SealedParts<'_>> {
+    let header = FileHeader::parse(bytes)?;
     if bytes.len() < HEADER_LEN + 4 {
         return Err(Error::Corrupt("文件长度不足"));
     }
@@ -150,19 +164,33 @@ pub fn split_sealed(bytes: &[u8]) -> Result<SealedParts<'_>> {
         Ok(n)
     };
 
+    let slice_of = |off: &mut usize, n: usize, what: &'static str| -> Result<&[u8]> {
+        if *off + n > bytes.len() {
+            return Err(Error::Corrupt(what));
+        }
+        let s = &bytes[*off..*off + n];
+        *off += n;
+        Ok(s)
+    };
+
+    // v3 起多一个绑定块
+    let bind = if header.version >= 3 {
+        let n = read_len(&mut off)?;
+        // 绑定块固定是「nonce + 32 字节明文 + tag」，别的一律拒绝：
+        // 长度不吻合的文件不可能是我们写出来的。
+        if n != crate::binding::BIND_BLOCK_LEN {
+            return Err(Error::Corrupt("绑定块长度非法"));
+        }
+        Some(slice_of(&mut off, n, "绑定块越界")?)
+    } else {
+        None
+    };
+
     let index_len = read_len(&mut off)?;
-    if off + index_len > bytes.len() {
-        return Err(Error::Corrupt("索引段越界"));
-    }
-    let index = &bytes[off..off + index_len];
-    off += index_len;
+    let index = slice_of(&mut off, index_len, "索引段越界")?;
 
     let body_len = read_len(&mut off)?;
-    if off + body_len > bytes.len() {
-        return Err(Error::Corrupt("正文段越界"));
-    }
-    let body = &bytes[off..off + body_len];
-    off += body_len;
+    let body = slice_of(&mut off, body_len, "正文段越界")?;
 
     // 校验块长度是恒定的：nonce(12) + 明文(18) + tag(16) = 46。
     // 之前只查 `>= 28`，等于「靠后面的 GCM 兜底」——格式层不该把
@@ -174,18 +202,32 @@ pub fn split_sealed(bytes: &[u8]) -> Result<SealedParts<'_>> {
     }
 
     Ok(SealedParts {
+        bind,
         index,
         body,
         verify,
     })
 }
 
-/// 把三段密文组装成完整文件字节。
+/// 把各段密文组装成完整文件字节。
+///
+/// `bind` 只在 `version >= 3` 时写入；v2 传 `None`。
 #[must_use]
-pub fn assemble(header: &[u8; HEADER_LEN], index: &[u8], body: &[u8], verify: &[u8]) -> Vec<u8> {
-    let total = HEADER_LEN + 4 + index.len() + 4 + body.len() + verify.len();
+pub fn assemble(
+    header: &[u8; HEADER_LEN],
+    bind: Option<&[u8]>,
+    index: &[u8],
+    body: &[u8],
+    verify: &[u8],
+) -> Vec<u8> {
+    let bind_len = bind.map_or(0, |b| b.len() + 4);
+    let total = HEADER_LEN + bind_len + 4 + index.len() + 4 + body.len() + verify.len();
     let mut out = Vec::with_capacity(total);
     out.extend_from_slice(header);
+    if let Some(b) = bind {
+        out.extend_from_slice(&(b.len() as u32).to_le_bytes());
+        out.extend_from_slice(b);
+    }
     out.extend_from_slice(&(index.len() as u32).to_le_bytes());
     out.extend_from_slice(index);
     out.extend_from_slice(&(body.len() as u32).to_le_bytes());
@@ -269,19 +311,48 @@ mod tests {
 
     #[test]
     fn assemble_split_roundtrip() {
-        let h = hdr().to_bytes();
+        // v2 布局：没有绑定块
+        let mut h = hdr();
+        h.version = 2;
+        let h = h.to_bytes();
         let verify = vec![7u8; VERIFY_BLOCK_LEN];
-        let file = assemble(&h, b"indexxxx", b"bodyyyyy", &verify);
+        let file = assemble(&h, None, b"indexxxx", b"bodyyyyy", &verify);
         let parts = split_sealed(&file).unwrap();
+        assert!(parts.bind.is_none());
         assert_eq!(parts.index, b"indexxxx");
         assert_eq!(parts.body, b"bodyyyyy");
     }
 
     #[test]
-    fn truncated_is_rejected() {
+    fn assemble_split_roundtrip_v3_with_bind_block() {
+        // v3 布局：头后面多一个绑定块
         let h = hdr().to_bytes();
         let verify = vec![7u8; VERIFY_BLOCK_LEN];
-        let file = assemble(&h, b"index", b"body", &verify);
+        let bind = vec![9u8; crate::binding::BIND_BLOCK_LEN];
+        let file = assemble(&h, Some(&bind), b"indexxxx", b"bodyyyyy", &verify);
+        let parts = split_sealed(&file).unwrap();
+        assert_eq!(parts.bind, Some(&bind[..]));
+        assert_eq!(parts.index, b"indexxxx");
+        assert_eq!(parts.body, b"bodyyyyy");
+    }
+
+    /// v3 文件里绑定块长度不对时必须拒绝，不能糊过去。
+    #[test]
+    fn v3_rejects_wrong_bind_block_length() {
+        let h = hdr().to_bytes();
+        let verify = vec![7u8; VERIFY_BLOCK_LEN];
+        let bind = vec![9u8; 10]; // 不是 BIND_BLOCK_LEN
+        let file = assemble(&h, Some(&bind), b"index", b"body", &verify);
+        assert!(split_sealed(&file).is_err());
+    }
+
+    #[test]
+    fn truncated_is_rejected() {
+        let mut h = hdr();
+        h.version = 2;
+        let h = h.to_bytes();
+        let verify = vec![7u8; VERIFY_BLOCK_LEN];
+        let file = assemble(&h, None, b"index", b"body", &verify);
         assert!(split_sealed(&file[..HEADER_LEN + 2]).is_err());
     }
 

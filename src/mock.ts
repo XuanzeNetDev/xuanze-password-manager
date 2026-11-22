@@ -153,8 +153,8 @@ export const mockApi = {
     return e?.name ?? "（无）";
   },
 
-  exportXlsx: async () => store.length,
-  importXlsx: async () => ({ imported: 0, skipped: 0, errors: [] }),
+  exportBackup: async () => store.length,
+  importBackup: async () => ({ imported: 0, skipped: 0, errors: [] }),
   autoUnlockStatus: async () => false,
   enableAutoUnlock: async () => {},
   disableAutoUnlock: async () => {},

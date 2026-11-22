@@ -1,7 +1,9 @@
-# 璇泽密钥库 · 文件格式规范
+﻿# 璇泽密钥库 · 文件格式规范
 
-> **格式版本：2**（头里 `version` 字段 `= 0x0002`，代码常量 `FORMAT_VERSION = 2`）
+> **格式版本：3**（头里 `version` 字段 `= 0x0003`，代码常量 `FORMAT_VERSION = 3`）
 > 状态：稳定 · 最后修改：2026-11-22
+>
+> 版本 2 的文件照常能读（按老规则解 pepper），写回时保持版本 2，不会被偷偷升级。
 >
 > 本文档是格式的**规范来源**。实现（`crates/xz-core`）与文档不一致时，文档与实现
 > 同时视为缺陷，须一起提交修复。任何破坏兼容性的改动都必须提升 `version` 字段。
@@ -20,12 +22,14 @@
 2. **两个独立密文段。** 索引与正文分开加密，用不同子密钥。
    索引可以在不解密正文的情况下单独读取，为将来「只给搜索结果的只读预览」留出口。
 3. **固定结构，无 TLV。** 整个文件只有三个定长或带长度前缀的段
-   （索引密文、正文密文、校验块）。TLV 更易扩展但要线性扫描，
-   当前规模用不到；真需要按字段随机访问时，再以提升 `version` 的方式引入。
+   （索引密文、正文密文、校验块），v3 起多一个固定长度的绑定块。
+   TLV 更易扩展但要线性扫描，当前规模用不到；真需要按字段随机访问时，
+   再以提升 `version` 的方式引入。
 4. **参数有上限。** 文件里可声明 KDF 参数，但读取端**强制**校验边界（见 §4）。
    恶意构造一个 `memory_kib = 4 GiB` 的 vault 就能把客户端打死，必须拦住。
 5. **不透露密码是否正确。** 密码错误、文件被篡改、段损坏，对外都表现为同一个错误。
    唯一的例外是 `verify_block` 的结构性缺失，那是文件格式错误，与密码无关。
+6. **绑定材料跟着文件走（v3 起）。** 见 §1.1。
 
 ---
 
@@ -33,10 +37,14 @@
 
 全部**小端序**。偏移量从文件起始算。
 
+### 版本 3（当前）
+
 ```
 ┌───────────────────────────────────────────── 偏移 0
 │  文件头（71 字节，见 §2）                    │
 ├───────────────────────────────────────────── 偏移 71
+│  u32  bind_len            （恒为 60）        │
+│  bytes bind_block         （固定 60 字节）    │
 │  u32  index_len                             │
 │  bytes index_blob   (index_len 字节)        │
 │  u32  body_len                              │
@@ -45,9 +53,36 @@
 └───────────────────────────────────────────── 文件尾
 ```
 
+### 版本 2（只读兼容）
+
+版本 2 没有 `bind_len` / `bind_block`，其余相同。读取端按头部 `version`
+选择布局；写回时保持原版本。
+
 **注意**：`verify_block` 没有长度前缀，长度恒为 **46 字节**
-（12 nonce + 18 明文 + 16 tag）。读取端必须**严格校验**这个长度——
-多一字节少一字节都拒绝，否则「文件被追加数据却仍能打开」这种语义说不清。
+（12 nonce + 18 明文 + 16 tag），且必须是文件的最后 46 字节。
+读取端必须**严格校验**这个长度 —— 多一字节少一字节都拒绝，否则
+「文件被追加数据却仍能打开」这种语义说不清。
+
+### 1.1 绑定块（v3）
+
+`bind_block` 恒为 **60 字节**：
+
+```
+nonce (12) || AES-256-GCM(bind_wrap_key, nonce, binding_secret(32), aad = "xzvlt/bind-block/v1") || tag (16)
+```
+
+`binding_secret` 是 32 字节（256 bit）随机数，建库时生成。
+
+`bind_wrap_key = HKDF-SHA256(hardware_fingerprint, info = "xzvlt/bind-wrap/v1", len = 32)`，
+其中 `hardware_fingerprint` 取自 **SMBIOS Type 1 的 UUID**（主板身份）。
+
+**它解决什么：** 在这之前，绑定材料只存在 `%APPDATA%` 下、由 DPAPI 封存。
+清一次 `%APPDATA%`、重装一次系统，材料就没了 → 库永久报废。
+现在文件自己带一份，用硬件指纹封装：**重装系统能开，换主板/换系统盘打不开。**
+
+**它不解决什么：** 整个文件被拷到另一台机器时，那台机器的硬件指纹不同，
+这一块解不开 —— 这正是「设备绑定」要的效果，不是缺陷。
+
 
 ### 密文段结构
 
@@ -69,7 +104,7 @@
 | 偏移 | 长度 | 字段 | 值 / 含义 |
 |---:|---:|---|---|
 | 0 | 8 | `magic` | `58 5A 56 4C 54 00 02 00`（即 `XZVLT\0\x02\0`） |
-| 8 | 2 | `version` | 格式版本，v2 = `0x0002` |
+| 8 | 2 | `version` | 格式版本，当前 `0x0003`；`0x0002` 兼容只读 |
 | 10 | 1 | `kdf_algo` | `0x01` = Argon2id v0x13。**算法与版本合成一个枚举值**，不是两个字段 |
 | 11 | 4 | `kdf_mem_kib` | Argon2 内存开销，单位 KiB |
 | 15 | 4 | `kdf_iterations` | Argon2 迭代次数 |
@@ -118,7 +153,8 @@ salt 的作用是防预计算表和跨库关联，一次性足够。
 ### 3.1 密钥派生
 
 ```
-master_key  = Argon2id(password, kdf_salt, m, t, p, out = 32 B)
+pepper      = 见 §3.1.1
+master_key  = Argon2id(password || pepper, kdf_salt, m, t, p, out = 32 B)
 payload_key = HKDF-SHA256(master_key, info = "xzvlt/v1/payload", len = 32)
 index_key   = HKDF-SHA256(master_key, info = "xzvlt/v1/index",   len = 32)
 verify_key  = HKDF-SHA256(master_key, info = "xzvlt/v1/verify",  len = 32)
@@ -128,8 +164,29 @@ verify_key  = HKDF-SHA256(master_key, info = "xzvlt/v1/verify",  len = 32)
 不需要再搅一次。用途隔离靠 `info` 串完成——三个子密钥互不通用，泄露一把不会连坐。
 
 > **`info` 里的 `v1` 不是版本号。** 它只是这套用途标签创建时取的命名空间前缀。
-> 格式版本升到 2 之后，这三条字面量刻意**保持不变**——改了就等于换一套派生规则，
+> 格式版本升到 3 之后，这三条字面量刻意**保持不变**——改了就等于换一套派生规则，
 > 所有既有文件会立刻解不开。格式版本始终只看文件头里的 `version` 字段。
+
+### 3.1.1 pepper（版本相关）
+
+`pepper` 是「主密码之外的第二份派生材料」。它的构造随格式版本不同：
+
+```
+v2:  pepper = "xzvlt-bind-v1\0" || binding_secret(32) || 0x00 || 计算机名 + "-" + C盘卷序列号
+v3:  pepper = "xzvlt-bind-v2\0" || binding_secret(32)
+```
+
+**v3 去掉了机器名和卷序列号**，因为那两个值都会变：计算机名右键就能改，
+卷序列号格式化就重新生成。把它们编进密钥派生，语义就变成「改个名字 /
+重装系统 = 数据永久报废」，而「设备绑定」想表达的其实是「换一台**硬件**
+就打不开」。
+
+v3 的 `binding_secret` 有两个来源，任一即可：
+
+1. **本机**：`%APPDATA%\cn.xuanze.vault\machine.bind`，DPAPI 封存（快，日常路径）
+2. **文件内**：§1.1 的绑定块，用 SMBIOS UUID 派生的密钥封装（重装系统后靠它）
+
+换硬件时两条都失效，库打不开 —— 这是设计的边界，不是缺陷。
 
 ### 3.2 加密
 
@@ -139,6 +196,8 @@ blob = nonce(12 B, CSPRNG) || AES-256-GCM(payload_key, nonce, plaintext, aad = �
 
 - 三个段的 AAD 都是**同一份**文件头字节。
 - 认证标签 16 字节，附在密文尾部（GCM 标准布局）。
+- 绑定块（§1.1）的 AAD 是固定字符串 `xzvlt/bind-block/v1`，不掺文件头 ——
+  它的密钥本来就由硬件指纹决定，掺头没有额外收益。
 
 ### 3.3 校验块（`verify_block`）
 
@@ -150,6 +209,12 @@ verify_block = nonce(12) || AES-256-GCM(verify_key, nonce, "xzvlt/v1/verify-ok",
 
 **它不能省。** 没有它，一次错误的密码会表现为「索引 JSON 解析失败」，
 用户看到的是「文件损坏」而不是「密码错误」——这在体验上是灾难。
+
+> **注意区分两件事**：这个块是「打开文件时的密码校验」。
+> 应用层还有一个「再输一次主密码」的关卡（导出备份 / 导入 / 改密码 /
+> 开关免密码模式），那里**不能**用「生成校验块再校验它自己」的写法 ——
+> 那是自证，任何密码都会通过。正确做法是重新派生后与内存主密钥比对，
+> 见 `Vault::verify_password_bound`。
 
 ---
 
@@ -256,23 +321,30 @@ verify_block = nonce(12) || AES-256-GCM(verify_key, nonce, "xzvlt/v1/verify-ok",
 ## 6. 打开流程（读取端）
 
 ```
-1. 读文件 → 校验长度 ≥ 75（`HEADER_LEN` 71 + 4 字节 `index_len`）
+1. 读文件 → 校验长度 ≥ HEADER_LEN + 4
 2. FileHeader::parse(前 71 字节)
    ├─ magic 不符        → NotAVault
    ├─ version > 支持版本 → UnsupportedVersion
    └─ KDF 参数越界       → UnacceptableKdf
-3. split_sealed 切出三段，任一段越界 → Corrupt
-4. derive_master_key（慢，唯一一处）
-5. check_verify_block
+3. split_sealed 按 version 切段（v3 多一个绑定块），任一段越界 → Corrupt
+4. 算 pepper
+   ├─ v2：读 machine.bind（DPAPI）→ 拼机器名与卷序列号
+   └─ v3：读当前机器 SMBIOS UUID → 解绑定块 → 得到 binding_secret
+            （解不开 = 换了硬件 → 拒绝，不进入 KDF）
+5. derive_master_key（慢，唯一一处）
+6. check_verify_block
    ├─ 认证失败 / 明文不符 → BadPasswordOrTampered
-6. decrypt index 段 → 反序列化
-7. decrypt body 段  → 反序列化 → 建 HashMap + Index
-8. 以正文为准重建索引（落盘索引仅供快速路径使用）
+7. decrypt index 段 → 反序列化
+8. decrypt body 段  → 反序列化 → 建 HashMap + Index
+9. 以正文为准重建索引（落盘索引仅供快速路径使用）
 ```
 
-第 8 步的取舍：落盘的索引和正文理论上一致，但**不信任**它。
+第 9 步的取舍：落盘的索引和正文理论上一致，但**不信任**它。
 以正文为准重建，避免索引被单独篡改时搜出幽灵条目。代价是打开时多做一遍索引构建
 （1 万条约 30 ms，见基准）。安全 > 这点开销。
+
+第 4 步之后才跑 KDF 是有意的：硬件指纹对不上时直接拒绝，
+不用浪费半秒去派生一把注定不对的钥匙。
 
 ---
 
@@ -283,12 +355,18 @@ verify_block = nonce(12) || AES-256-GCM(verify_key, nonce, "xzvlt/v1/verify-ok",
 2. 正文序列化 → payload_key 加密
 3. 索引序列化 → index_key 加密
 4. 生成 verify_block
-5. 拼接完整字节
-6. 写同目录临时文件 .<name>.<16字节随机 hex>.tmp → fsync → rename 覆盖
+5. v3：重新生成绑定块（同一个 binding_secret，新的 nonce）
+6. 拼接完整字节
+7. 写同目录临时文件 .<name>.<16字节随机 hex>.tmp → fsync → rename 覆盖
 ```
 
-第 6 步是**原子保存**。断电或崩溃时，磁盘上要么是完整旧文件、要么是完整新文件，
+第 7 步是**原子保存**。断电或崩溃时，磁盘上要么是完整旧文件、要么是完整新文件，
 不会出现半截 vault。
+
+**v3 库有一条硬规则**：文件头写着 3，就必须带一段真的绑定块。
+少了它读取端会按 v3 布局去解析、把 `index_len` 当成 `bind_len`，
+整库都打不开。所以 `Vault::seal` 在「版本是 3 但内存里没有绑定材料」时
+直接拒绝写出，而不是写出一个缺段的文件。
 
 落在文件系统上是 `std::fs::rename`，它在 Windows 上走
 `MoveFileExW(MOVEFILE_REPLACE_EXISTING)`。需要厘清两点：
@@ -312,7 +390,8 @@ verify_block = nonce(12) || AES-256-GCM(verify_key, nonce, "xzvlt/v1/verify-ok",
 
 - 更换 KDF 算法或改变 `info` 串
 - 改变 AAD 覆盖范围
-- 改变段布局
+- 改变段布局（v3 加绑定块就是这类）
+- 改 pepper 的构造规则（v3 去掉机器名与卷序列号就是这类）
 - 给 `kind` 数值重新赋值
 - 改变索引/正文的 JSON 结构且无法向后兼容
 
@@ -321,6 +400,13 @@ verify_block = nonce(12) || AES-256-GCM(verify_key, nonce, "xzvlt/v1/verify-ok",
 
 读取端对 `version` 的处理：**只接受 ≤ 自身支持的最高版本**，高于则明确报错
 `UnsupportedVersion`，绝不猜测解析。
+
+**版本历史：**
+
+| 版本 | 变化 |
+|---:|---|
+| 2 | 定型版本：71 字节头 + 索引 + 正文 + 校验块 |
+| 3 | 头后面加固定 60 字节的绑定块；pepper 不再含机器名与卷序列号 |
 
 ---
 
@@ -331,15 +417,19 @@ verify_block = nonce(12) || AES-256-GCM(verify_key, nonce, "xzvlt/v1/verify-ok",
 2. **无增量落盘。** 同上。
 3. **JSON 开销。** 5 万条正文 33 MiB，其中 JSON 语法字符占比可观。
    后续版本可在格式层换 binary，但需保留「可人工审阅」的导出路径。
-4. **机器绑定是应用层行为，不在格式里。** `.xzvlt` 文件本身不含任何设备指纹，
-   换台机器用 `format` 里的规则仍可解析。绑定发生在应用层：主密钥派生时混入
-   本机 DPAPI 封存的随机串 + 机器名 + 卷序列号（见 `crates/xz-core/src/binding.rs`），
-   同时应用只接受 `vault_id` 匹配本机登记表的库。
-   结果是：文件格式保持可移植，但用它解密需要原机器的身份。
-   未来可加硬件密钥（TPM / FIDO2）作为额外因子。
+4. **绑定是应用层行为，但 v3 把材料放进了格式里。** `.xzvlt` 文件本身不含设备指纹，
+   只有一段「用硬件指纹封装的随机串」。换台机器按格式能解析，但解不开那一段 ——
+   绑定效果由它实现。v2 的老库仍然只靠应用层（DPAPI + 机器名 + 卷序列号）。
+   未来可加 TPM / FIDO2 作为更硬的因子。
 5. **`parallelism` 不加速。** 当前构建不启用 Argon2 的多线程实现
    （`argon2` crate 的并行特性依赖 rayon，会引入额外依赖树）。
-   档位字段照写入，为将来留出口。
+   档位字段照写入，为将来留出口。**注意：写 4 不代表快 4 倍，也不代表更安全**——
+   它只影响 Argon2 的内部结构，实际强度由内存开销 × 迭代次数决定。
+6. **SMBIOS UUID 不是秘密。** 它可能出现在系统信息、日志、硬件报告里。
+   绑定块的安全性建立在「攻击者不知道你用哪台机器」上，而不是「UUID 猜不到」。
+   这一点和 v2 的机器名/卷序列号同级，不夸大。
+7. **虚拟机克隆会带同一份 SMBIOS UUID。** 在克隆出来的 VM 里，绑定块能互相解开。
+   物理机上不存在这个问题。
 
 ---
 
@@ -362,4 +452,4 @@ verify_block = nonce(12) || AES-256-GCM(verify_key, nonce, "xzvlt/v1/verify-ok",
 | `save_and_open_from_disk` | 原子保存无残留临时文件 |
 | `change_password_then_old_fails` | 换密码后旧密码失效 |
 
-`cargo test -p xz-core` 应全绿（当前 63 项）。
+`cargo test -p xz-core` 应全绿（当前 67 项）。

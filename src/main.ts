@@ -169,19 +169,24 @@ function renderLock(msg = "", info = false): void {
       await enter();
     } catch (e) {
       msgEl.classList.remove("info");
-      // 四类错误要分开说，因为用户的下一步动作完全不同：
+      // 这几类错误要分开说，因为用户的下一步动作完全不同：
       //   1. 密码错 → 重输
       //   2. 这库不归本机管 → 换个文件
-      //   3. 本机绑定材料丢了 → 不能再试，库救不回来了
-      //   4. 库文件不在了 → 去找文件 / 从 Excel 恢复
-      // 全提示成「密码不对」会让后面三种人一直重试一个正确的密码。
+      //   3. 硬件对不上（换过主板/系统盘）→ 只能用备份恢复
+      //   4. 库文件不在了 → 去找文件 / 从备份恢复
+      //   5. 老库丢了 machine.bind → 库本身还在，但确实开不了
+      // 全提示成「密码不对」会让后面几种人一直重试一个正确的密码。
       const raw = errText(e);
-      if (raw.includes("绑定材料")) {
-        msgEl.textContent = "本机的绑定材料丢失，这个库已无法打开";
+      if (raw.includes("绑定的不是当前设备") || raw.includes("硬件标识")) {
+        msgEl.textContent =
+          "这个库绑定的不是这台设备（换过主板或系统盘）。用之前导出的备份恢复。";
+      } else if (raw.includes("绑定材料")) {
+        msgEl.textContent = "这个老库的本机绑定材料丢了，已无法打开。用备份恢复。";
       } else if (raw.includes("不是本机创建")) {
         msgEl.textContent = "这个库不是在本机创建的，无法打开";
       } else if (raw.includes("读不了文件")) {
-        msgEl.textContent = "库文件不在了（被移动或删除）。可以从导出的 Excel 恢复。";
+        msgEl.textContent =
+          "库文件不在了（被移动或删除）。重装系统的话把文件放回原处即可，换硬件才需要用备份恢复。";
       } else {
         msgEl.textContent = "密码不对";
       }
@@ -524,7 +529,7 @@ function renderSide(): HTMLElement {
     h(
       "div",
       { class: "side-foot" },
-      // 只在左栏放「设置」。导入 / 导出、改密码、免密码模式都在设置面板里 ——
+      // 只在左栏放「设置」。备份、改密码、免密码模式都在设置面板里 ——
       // 它们不是高频动作，摆在主界面上只会让常用路径更挤。
       mk("gear", "设置", () => void openSettings()),
       h("div", { class: "grow" }),
@@ -1333,8 +1338,8 @@ async function openSettings(): Promise<void> {
       ),
 
       setRow(
-        "导入 / 导出",
-        "Excel 表格，按专辑分表。导出的是明文；导入导出两边都要再输一次主密码（免密码模式也一样）。",
+        "备份",
+        "导出的是加密文件（.xzbak），里面是完整 Excel，但磁盘上是密文。换电脑时把这个文件拷过去，用「导入」打开。",
         h("div", { class: "row2" },
           (() => {
             const b = h("button", { class: "btn", type: "button" }, "导入");
@@ -1345,7 +1350,7 @@ async function openSettings(): Promise<void> {
             return b;
           })(),
           (() => {
-            const b = h("button", { class: "btn", type: "button" }, "导出");
+            const b = h("button", { class: "btn primary", type: "button" }, "导出备份");
             b.addEventListener("click", () => {
               closeModal();
               void openExport();
@@ -1384,7 +1389,9 @@ async function openSettings(): Promise<void> {
 }
 
 /**
- * 从 Excel 导入。格式与导出对称。
+ * 从备份导入。
+ *
+ * 两种文件都吃：`.xzbak`（加密备份，要备份密码）和普通 `.xlsx`。
  *
  * 表头按**名字**对位（列顺序可以变、可以多几列手写批注，只要「名称」列在），
  * 每张工作表对应一个专辑。认不出表头的表整张跳过 —— 不去猜列序，
@@ -1401,6 +1408,11 @@ async function openImport(): Promise<void> {
     class: "in",
     type: "password",
     attrs: { placeholder: "主密码", autocomplete: "off" },
+  }) as HTMLInputElement;
+  const bw = h("input", {
+    class: "in",
+    type: "password",
+    attrs: { placeholder: "备份密码（加密备份才需要）", autocomplete: "off" },
   }) as HTMLInputElement;
   const msg = h("div", { class: "err" });
 
@@ -1423,10 +1435,13 @@ async function openImport(): Promise<void> {
     go.textContent = "处理中…";
     try {
       const picked = await open({
-        title: "选择要导入的 Excel",
+        title: "选择要导入的文件",
         multiple: false,
         directory: false,
-        filters: [{ name: "Excel 表格", extensions: ["xlsx"] }],
+        filters: [
+          { name: "璇泽备份或 Excel", extensions: ["xzbak", "xlsx"] },
+          { name: "所有文件", extensions: ["*"] },
+        ],
       });
       const path = typeof picked === "string" ? picked : null;
       if (!path) {
@@ -1436,7 +1451,7 @@ async function openImport(): Promise<void> {
         return;
       }
 
-      const r = await api.importXlsx(path, pw.value);
+      const r = await api.importBackup(path, pw.value, bw.value);
       closeModal();
       await reloadList();
       await preloadAll();
@@ -1457,17 +1472,19 @@ async function openImport(): Promise<void> {
     }
   });
 
-  pw.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") void go.click();
-  });
+  for (const el of [pw, bw]) {
+    el.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") void go.click();
+    });
+  }
 
   openModal(
-    "导入 Excel",
+    "导入",
     [
       h(
         "div",
         { class: "shint" },
-        "读取本软件导出的表格：表头按列名对位，每张工作表对应一个专辑。",
+        "选 .xzbak 加密备份，或本软件导出的 .xlsx。表头按列名对位，每张工作表对应一个专辑。",
       ),
       h(
         "div",
@@ -1475,6 +1492,7 @@ async function openImport(): Promise<void> {
         "自定义字段、创建时间、过期时间、使用次数都会一并还原。",
       ),
       pw,
+      bw,
       msg,
       h(
         "div",
@@ -1601,24 +1619,32 @@ function openAutoUnlock(enable: boolean): void {
 
 
 /**
- * 导出为 Excel。**必须再输一次主密码**，免密码模式也不例外。
+ * 导出加密备份（`.xzbak`）。
  *
- * 这是唯一一个能把全部密钥一次性倒出来的入口，导出的是明文。
- * 只判断「已解锁」就放行，等于给同机任何进程开一扇门 ——
- * 重输密码把这一步拉回「只有知道主密码的人能做」。
+ * 内容是一份完整 xlsx，但外面用 Argon2id + AES-256-GCM 包了一层 ——
+ * 磁盘上不会出现明文表格。这是之前最大的一个坑：备份是唯一能救命的动作，
+ * 而它偏偏是明文的。
  *
- * 免密码模式以前会跳过这一步（后端也跟着跳过），结果是：点一下设置，
- * 此后本机任何能 invoke 的程序都能让软件把整库导成明文 Excel。
- * 现在两种模式一视同仁：省的是每次启动的输入，不是「一次性拿出全部明文」。
- *
- * 流程：输密码 → 选位置（系统另存为）→ 写盘。
- * 三张表起步：「全部」+ 每个专辑一张。
+ * 两个密码：
+ * - 主密码：证明是本人。这一步要重跑 KDF，所以要等一下。
+ * - 备份密码：给这个文件本身加密。可以和主密码不同；
+ *   留空是不允许的 —— 那等于没加密。
  */
 async function openExport(): Promise<void> {
   const pw = h("input", {
     class: "in",
     type: "password",
     attrs: { placeholder: "主密码", autocomplete: "off" },
+  }) as HTMLInputElement;
+  const bw = h("input", {
+    class: "in",
+    type: "password",
+    attrs: { placeholder: "备份密码（至少 8 位）", autocomplete: "off" },
+  }) as HTMLInputElement;
+  const bw2 = h("input", {
+    class: "in",
+    type: "password",
+    attrs: { placeholder: "再输一次备份密码", autocomplete: "off" },
   }) as HTMLInputElement;
   const msg = h("div", { class: "err" });
 
@@ -1635,6 +1661,16 @@ async function openExport(): Promise<void> {
       pw.focus();
       return;
     }
+    if (bw.value.length < 8) {
+      msg.textContent = "备份密码至少 8 位";
+      bw.focus();
+      return;
+    }
+    if (bw.value !== bw2.value) {
+      msg.textContent = "两次输入的备份密码不一致";
+      bw2.select();
+      return;
+    }
 
     busy = true;
     go.disabled = true;
@@ -1642,9 +1678,9 @@ async function openExport(): Promise<void> {
     try {
       // 先让用户选位置。取消就什么都不做 —— 不要先输密码再告诉人家取消了。
       const path = await save({
-        title: "导出为 Excel",
-        defaultPath: `璇泽密钥库-${new Date().toISOString().slice(0, 10)}.xlsx`,
-        filters: [{ name: "Excel 表格", extensions: ["xlsx"] }],
+        title: "导出加密备份",
+        defaultPath: `璇泽密钥库-${new Date().toISOString().slice(0, 10)}.xzbak`,
+        filters: [{ name: "璇泽密钥库备份", extensions: ["xzbak"] }],
       });
       if (!path) {
         busy = false;
@@ -1653,9 +1689,9 @@ async function openExport(): Promise<void> {
         return;
       }
 
-      const n = await api.exportXlsx(path, pw.value);
+      const n = await api.exportBackup(path, pw.value, bw.value);
       closeModal();
-      toast(`已导出 ${n} 条`, "文件是明文，用完请及时删除");
+      toast(`已导出 ${n} 条（加密）`, "换电脑时把这个文件拷过去，用「导入」打开");
     } catch (e) {
       msg.textContent = errText(e);
       busy = false;
@@ -1664,29 +1700,33 @@ async function openExport(): Promise<void> {
     }
   });
 
-  pw.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") void go.click();
-  });
+  for (const el of [pw, bw, bw2]) {
+    el.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") void go.click();
+    });
+  }
 
   openModal(
-    "导出 Excel",
+    "导出加密备份",
     [
       h(
         "div",
         { class: "shint" },
-        "导出的文件是明文，任何拿到它的人都能看到全部账号密码。",
+        "得到一个 .xzbak 文件：里面是完整 Excel，但磁盘上是密文。拷到任何地方都不会泄露账号密码。",
       ),
       h(
         "div",
         { class: "shint" },
-        "这份文件也是换机器 / 重装系统时的恢复来源：新机器上新建库之后，用「导入」把它读回来，自定义字段和时间都会还原。",
+        "这也是换机器 / 重装系统时的恢复来源：新机器上建好库，用「导入」把它读回来。",
       ),
       pw,
+      bw,
+      bw2,
       msg,
       h(
         "div",
         { class: "shint" },
-        "按专辑分表：每个专辑一张工作表，另有一张包含全部条目。",
+        "备份密码可以设成和主密码一样，也可以另设一个。忘了它这个文件就打不开了 —— 我们没有后门。",
       ),
     ],
     [cancel, go],

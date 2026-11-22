@@ -43,6 +43,37 @@ struct IndexPayload {
     items: Vec<IndexItem>,
 }
 
+/// v3 起跟着库文件走的绑定材料。
+///
+/// 存在的理由：`%APPDATA%` 会被清空、DPAPI 主密钥会随重装系统换掉，
+/// 而库文件本身还在。把绑定材料用硬件指纹封装后写进文件，
+/// 重装系统（硬件没变）就能靠它把库打开。
+pub struct Binding {
+    /// 本机随机串（256 bit）。
+    secret: SecretBytes,
+    /// 封装绑定块用的硬件指纹。换了硬件就解不开。
+    hardware_fp: Vec<u8>,
+}
+
+impl std::fmt::Debug for Binding {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Binding")
+            .field("secret", &self.secret) // SecretBytes 只打印长度
+            .field("hardware_fp_len", &self.hardware_fp.len())
+            .finish()
+    }
+}
+
+impl Clone for Binding {
+    /// 显式复制：`secret` 用 `duplicate()`，两份都会被擦除。
+    fn clone(&self) -> Self {
+        Self {
+            secret: self.secret.duplicate(),
+            hardware_fp: self.hardware_fp.clone(),
+        }
+    }
+}
+
 /// 打开后的 vault。
 pub struct Vault {
     /// 落盘路径。`None` 表示纯内存（新建未保存）。
@@ -61,6 +92,10 @@ pub struct Vault {
     index: Index,
     /// 是否有未落盘改动。
     dirty: bool,
+    /// 写回时用的格式版本。打开老库时保持原版本，不会偷偷升级。
+    format_version: u16,
+    /// 绑定材料（仅 v3）。写回时用它重写绑定块。
+    binding: Option<Binding>,
 }
 
 impl std::fmt::Debug for Vault {
@@ -81,9 +116,10 @@ impl Vault {
         Self::create_bound(password, params, &[])
     }
 
-    /// 新建空 vault，并绑定到本机材料。
+    /// 新建空 vault，并绑定到本机材料（v2 规则）。
     ///
     /// `pepper` 为空表示不绑定（只用于测试）；正式使用必须给。
+    /// 新代码应该用 [`Vault::create_bound_v3`]。
     pub fn create_bound(password: &str, params: KdfParams, pepper: &[u8]) -> Result<Self> {
         let salt = kdf::random_salt();
         let master_key = if pepper.is_empty() {
@@ -100,7 +136,62 @@ impl Vault {
             entries: HashMap::new(),
             index: Index::new(),
             dirty: true,
+            // v2 规则建的库：不带绑定块，写回时也保持 v2 布局。
+            format_version: 2,
+            binding: None,
         })
+    }
+
+    /// 新建空 vault，绑定规则用 v3：绑定材料跟着文件走。
+    ///
+    /// 和 v2 的区别只有一个：pepper 不再混机器名与卷序列号，
+    /// 而 `binding_secret` 会用 `hardware_fp` 加密封进文件（见 [`Binding`]）。
+    /// 于是「改计算机名 / 重装系统」不再导致数据报废，换硬件依然打不开。
+    pub fn create_bound_v3(
+        password: &str,
+        params: KdfParams,
+        binding_secret: &[u8],
+        hardware_fp: Vec<u8>,
+    ) -> Result<Self> {
+        let salt = kdf::random_salt();
+        let master_key = crate::binding::derive_bound_key_v3(
+            password.as_bytes(),
+            binding_secret,
+            &salt,
+            params,
+        )?;
+        Ok(Self {
+            path: None,
+            kdf: params,
+            salt,
+            vault_id: kdf::random_bytes::<16>(),
+            master_key,
+            entries: HashMap::new(),
+            index: Index::new(),
+            dirty: true,
+            format_version: crate::FORMAT_VERSION,
+            binding: Some(Binding {
+                secret: SecretBytes::from_vec(binding_secret.to_vec()),
+                hardware_fp,
+            }),
+        })
+    }
+
+    /// 装配 v3 的绑定材料（打开库之后调用）。
+    ///
+    /// 只是把「已知的 binding_secret + 当前硬件指纹」记进 `Vault`，
+    /// 以便下次 `save()` 时重写绑定块。不改主密钥、不改任何条目。
+    pub fn adopt_binding(&mut self, binding_secret: SecretBytes, hardware_fp: Vec<u8>) {
+        self.binding = Some(Binding {
+            secret: binding_secret,
+            hardware_fp,
+        });
+    }
+
+    /// 这个库是否带 v3 的绑定块。
+    #[must_use]
+    pub fn has_binding(&self) -> bool {
+        self.binding.is_some()
     }
 
     /// 从字节打开。
@@ -179,6 +270,11 @@ impl Vault {
             entries,
             index,
             dirty: false,
+            // 记住原文件是哪个版本，写回时保持原样 —— 打开一个老库不应该
+            // 偷偷把它升级成新格式。
+            format_version: header.version,
+            // 绑定材料由调用方解出来后 `adopt_binding()` 补上。
+            binding: None,
         })
     }
 
@@ -320,8 +416,25 @@ impl Vault {
     ///
     /// 不落盘，方便调用方决定写哪里（Tauri 层可以走 `fs::write` 或流式）。
     pub fn seal(&mut self) -> Result<Vec<u8>> {
+        // 版本决定布局：带绑定材料 → v3（头后面多一段绑定块）；
+        // 不带 → 保持打开时的版本（新建的按 v2）。
+        //
+        // 这里有一条不能含糊的规则：**v3 的文件头必须配一段真的绑定块**。
+        // 少了它，读取端会按 v3 布局去解析、把 index_len 当成 bind_len，
+        // 长度对不上就整库打不开。所以宁可直接报错，也不要写出一个
+        // 「标着 v3 却缺段」的文件。
+        let version = if self.binding.is_some() {
+            crate::FORMAT_VERSION.max(3)
+        } else {
+            if self.format_version >= 3 {
+                return Err(Error::Invalid(
+                    "这个库是 v3 格式，但内存里没有绑定材料 —— 拒绝写出会降级/损坏的文件",
+                ));
+            }
+            self.format_version
+        };
         let header = FileHeader {
-            version: crate::FORMAT_VERSION,
+            version,
             kdf: self.kdf,
             salt: self.salt,
             vault_id: self.vault_id,
@@ -352,8 +465,22 @@ impl Vault {
         // 校验块
         let verify = codec::make_verify_block(&self.master_key, &header_bytes)?;
 
+        // 绑定块（v3）：把本机随机串用硬件指纹加密封进文件。
+        //
+        // 它存在的唯一目的是「重装系统之后还能把库打开」——
+        // `%APPDATA%` 会被清空、DPAPI 主密钥会换掉，而文件还在。
+        // 换了硬件则解不开，那正是「设备绑定」要的效果。
+        let bind_blob = match &self.binding {
+            Some(b) => Some(crate::binding::wrap_binding_secret(
+                &b.hardware_fp,
+                b.secret.as_slice(),
+            )?),
+            None => None,
+        };
+
         Ok(codec::assemble(
             &header_bytes,
+            bind_blob.as_deref(),
             &idx_blob,
             &body_blob,
             &verify,
@@ -488,7 +615,7 @@ impl Vault {
     /// 给「改密码」用：调用方先拿到字节、安全落盘成功、再回来
     /// `change_password_bound`。顺序反过来的话，落盘失败会留下
     /// 「内存新密码、磁盘旧密码」的不一致状态。
-    /// 导出全部条目 + KDF 参数 + vault_id 的快照。
+    /// 导出全部条目 + KDF 参数 + vault_id（+ v3 绑定材料）的快照。
     ///
     /// 用途：让调用方**先放锁**再去跑重的加密流程。改密码要跑两轮 Argon2，
     /// 全程持锁会把整个应用冻住。
@@ -498,6 +625,10 @@ impl Vault {
             entries: self.entries.values().cloned().collect(),
             kdf: self.kdf,
             vault_id: self.vault_id,
+            // 改密码之后仍然是同一个库，绑定材料必须跟着走 ——
+            // 否则重新封装出来的文件会丢掉绑定块，v3 库被降级成 v2，
+            // 然后用原来的 pepper 规则再也打不开。
+            binding: self.binding.clone(),
         }
     }
 
@@ -510,7 +641,11 @@ impl Vault {
         };
 
         let header = FileHeader {
-            version: crate::FORMAT_VERSION,
+            version: if self.binding.is_some() {
+                crate::FORMAT_VERSION.max(3)
+            } else {
+                self.format_version.min(crate::FORMAT_VERSION)
+            },
             kdf: self.kdf,
             salt,
             vault_id: self.vault_id,
@@ -533,7 +668,20 @@ impl Vault {
         let idx_blob = crypto::seal(&idx_key, &header, &idx_plain)?;
 
         let verify = codec::make_verify_block(&key, &header)?;
-        Ok(codec::assemble(&header, &idx_blob, &body_blob, &verify))
+        let bind_blob = match &self.binding {
+            Some(b) => Some(crate::binding::wrap_binding_secret(
+                &b.hardware_fp,
+                b.secret.as_slice(),
+            )?),
+            None => None,
+        };
+        Ok(codec::assemble(
+            &header,
+            bind_blob.as_deref(),
+            &idx_blob,
+            &body_blob,
+            &verify,
+        ))
     }
 
     /// 主动锁定：擦除密钥、擦除全部条目明文。之后这个 `Vault` 只剩个空壳。
@@ -576,6 +724,8 @@ pub struct VaultSnapshot {
     pub kdf: KdfParams,
     /// 库标识（写回文件头用，不能变）。
     pub vault_id: [u8; 16],
+    /// v3 的绑定材料。改密码之后仍然是同一个库，这块必须跟着走。
+    pub binding: Option<Binding>,
 }
 
 /// 用新密码把快照重新封装成完整文件字节。
@@ -591,7 +741,11 @@ pub fn reseal_snapshot(snap: &VaultSnapshot, new_password: &str, pepper: &[u8]) 
     };
 
     let header = FileHeader {
-        version: crate::FORMAT_VERSION,
+        version: if snap.binding.is_some() {
+            crate::FORMAT_VERSION.max(3)
+        } else {
+            2
+        },
         kdf: snap.kdf,
         salt,
         vault_id: snap.vault_id,
@@ -619,7 +773,21 @@ pub fn reseal_snapshot(snap: &VaultSnapshot, new_password: &str, pepper: &[u8]) 
     let idx_blob = crypto::seal(&idx_key, &header, &idx_plain)?;
 
     let verify = codec::make_verify_block(&key, &header)?;
-    Ok(codec::assemble(&header, &idx_blob, &body_blob, &verify))
+    // 绑定块跟着快照走：改密码不能把 v3 库降级成 v2。
+    let bind_blob = match &snap.binding {
+        Some(b) => Some(crate::binding::wrap_binding_secret(
+            &b.hardware_fp,
+            b.secret.as_slice(),
+        )?),
+        None => None,
+    };
+    Ok(codec::assemble(
+        &header,
+        bind_blob.as_deref(),
+        &idx_blob,
+        &body_blob,
+        &verify,
+    ))
 }
 
 /// 概览统计。
@@ -872,6 +1040,100 @@ mod binding_tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
+
+    /// v3：绑定材料跟着文件走。
+    ///
+    /// 守的是「重装系统 / `%APPDATA%` 被清空之后还能把库打开」这条承诺：
+    /// 硬件没变，就能从文件里的绑定块解出本机随机串；
+    /// 换了硬件，就解不开。这是 v3 存在的全部理由。
+    #[test]
+    fn v3_binding_travels_with_the_file() {
+        use crate::kdf::KdfParams;
+
+        let secret = [3u8; crate::binding::BINDING_SECRET_LEN];
+        let fp_a: Vec<u8> = b"hardware-fingerprint-A".to_vec();
+        let pw = "unit-test-password";
+
+        let mut v =
+            Vault::create_bound_v3(pw, KdfParams::light(), &secret, fp_a.clone()).unwrap();
+        v.insert(crate::entry::Entry {
+            id: "x".into(),
+            kind: crate::entry::EntryKind::Login,
+            name: "测试".into(),
+            username: "u".into(),
+            secret: "s".into(),
+            url: String::new(),
+            fields: vec![],
+            tags: vec![],
+            notes: String::new(),
+            created_at: 1,
+            updated_at: 1,
+            expires_at: 0,
+            use_count: 0,
+            last_used_at: 0,
+        })
+        .unwrap();
+        let bytes = v.seal().unwrap();
+
+        // 文件头是 v3，且真的带了绑定块
+        let header = FileHeader::parse(&bytes).unwrap();
+        assert_eq!(header.version, 3);
+        let parts = codec::split_sealed(&bytes).unwrap();
+        let blob = parts.bind.expect("v3 文件必须有绑定块");
+        assert_eq!(blob.len(), crate::binding::BIND_BLOCK_LEN);
+
+        // 同一台硬件：能从文件里解出绑定材料，并据此打开库
+        let recovered = crate::binding::unwrap_binding_secret(&fp_a, blob).unwrap();
+        assert_eq!(recovered.as_slice(), &secret);
+        let key = crate::binding::derive_bound_key_v3(
+            pw.as_bytes(),
+            recovered.as_slice(),
+            &header.salt,
+            header.kdf,
+        )
+        .unwrap();
+        let reopened = Vault::open_bound_with_key(&bytes, key).unwrap();
+        assert_eq!(reopened.len(), 1);
+
+        // 换了硬件：绑定块解不开 —— 这正是「设备绑定」要的效果
+        assert!(
+            crate::binding::unwrap_binding_secret(b"hardware-fingerprint-B", blob).is_err(),
+            "换硬件必须解不开绑定块"
+        );
+    }
+
+    /// 打开 v3 库但没补上绑定材料时，不允许写出（那会把库降级成 v2）。
+    #[test]
+    fn sealing_v3_without_binding_is_refused() {
+        use crate::kdf::KdfParams;
+
+        let secret = [4u8; crate::binding::BINDING_SECRET_LEN];
+        let mut v = Vault::create_bound_v3(
+            "pw",
+            KdfParams::light(),
+            &secret,
+            b"fp".to_vec(),
+        )
+        .unwrap();
+        let bytes = v.seal().unwrap();
+
+        // 模拟「打开后忘了 adopt_binding」
+        let header = FileHeader::parse(&bytes).unwrap();
+        let recovered = crate::binding::unwrap_binding_secret(b"fp", codec::split_sealed(&bytes).unwrap().bind.unwrap()).unwrap();
+        let k = crate::binding::derive_bound_key_v3(
+            b"pw",
+            recovered.as_slice(),
+            &header.salt,
+            header.kdf,
+        )
+        .unwrap();
+        let mut opened = Vault::open_bound_with_key(&bytes, k).unwrap();
+        // 没有 adopt_binding → seal 必须拒绝，而不是写出一个缺绑定块的 v3 文件
+        assert!(opened.seal().is_err(), "缺绑定材料的 v3 库不该被写回");
+        // 补上之后就能写
+        opened.adopt_binding(recovered, b"fp".to_vec());
+        assert!(opened.seal().is_ok());
+    }
 
     /// `verify_password` 必须真的拒绝错密码。
     ///

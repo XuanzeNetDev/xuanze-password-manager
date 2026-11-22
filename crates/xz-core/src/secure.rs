@@ -79,6 +79,16 @@ impl SecretBytes {
         self.0.clear();
     }
 
+    /// 复制一份。两份都会在 drop 时被擦除。
+    ///
+    /// 为什么需要它：绑定材料要在「快照」和「Vault」之间各留一份
+    /// （改密码时快照会被搬到锁外去跑 KDF），而 `SecretBytes` 故意
+    /// 不实现 `Clone` —— 克隆秘密这件事必须是显式的，不能顺手 `clone()`。
+    #[must_use]
+    pub fn duplicate(&self) -> Self {
+        Self(self.0.clone())
+    }
+
     /// 交给需要 `Vec<u8>` 的第三方 API 使用。
     ///
     /// 返回 `Zeroizing`，调用方**不需要也不能**手动擦除 —— 出了这个门

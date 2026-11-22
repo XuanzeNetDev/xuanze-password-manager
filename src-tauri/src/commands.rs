@@ -316,6 +316,10 @@ pub fn vault_status(state: State<'_, AppState>) -> Result<VaultStatus, String> {
 }
 
 /// 新建库（内存中，需再调 `vault_save` 落盘）。
+///
+/// 绑定规则选 v3（如果读得到硬件指纹）：绑定材料跟着文件走，
+/// 见 `xz_core::vault::Binding` 与 `machine::hardware_fingerprint`。
+/// 读不到硬件指纹的机器退回 v2 规则（绑机器名 + 卷序列号）。
 #[tauri::command]
 pub async fn vault_create(
     state: State<'_, AppState>,
@@ -331,14 +335,23 @@ pub async fn vault_create(
     let params = kdf_from(level.as_deref());
 
     let vault = tauri::async_runtime::spawn_blocking(move || -> Result<_, String> {
-        let pepper = crate::machine::pepper()?;
-        let vault = xz_core::vault::Vault::create_bound(&password, params, &pepper).map_err(err)?;
+        let vault = match crate::machine::hardware_fingerprint() {
+            Some(fp) => {
+                // v3：本机随机串封进文件，重装系统也能开
+                let binding_secret: [u8; xz_core::binding::BINDING_SECRET_LEN] =
+                    xz_core::kdf::random_bytes();
+                xz_core::vault::Vault::create_bound_v3(&password, params, &binding_secret, fp)
+                    .map_err(err)?
+            }
+            None => {
+                // 读不到硬件指纹：退回 v2 规则（绑机器名 + 卷序列号）。
+                // 脆，但总比不让用强。
+                let pepper = crate::machine::pepper()?;
+                xz_core::vault::Vault::create_bound(&password, params, &pepper).map_err(err)?
+            }
+        };
         // 登记：这个库从此归本机所有，别的 .xzvlt 进不来
         crate::machine::register_vault(&vault.vault_id())?;
-        // 这里以前有一句 `vault.set_path(PathBuf::new())` —— 想表达的是
-        // 「还没落盘」，实际效果是把路径设成了 `Some("")`。之后任何一次
-        // 不带 path 的 `save()` 都会往 cwd 写临时文件、再 rename 到空路径
-        // 失败。新建的 Vault 本来就是 `path: None`，什么都不用做。
         Ok(vault)
     })
     .await
@@ -414,16 +427,72 @@ pub async fn vault_open(
     //
     // 这一段是秒级的，必须丢到阻塞线程池。`async fn` 本身不够 ——
     // 里面照样同步跑，就等于还是占着主线程。
+    //
+    // pepper 按文件版本选规则：
+    //   v2（老库）：机器名 + 卷序列号 + DPAPI 封存的随机串
+    //   v3（新库）：只有随机串，从文件里的绑定块用硬件指纹解出来
+    let info = binding_for(&bytes, &header)?;
+    let pepper = info.pepper;
+    let binding = info.material;
+
     let bytes_for_kdf = bytes.clone();
+    let pepper_for_kdf = pepper.clone();
     let key = tauri::async_runtime::spawn_blocking(move || -> Result<_, String> {
-        let pepper = crate::machine::pepper()?;
-        xz_core::vault::Vault::derive_key_for(&bytes_for_kdf, &password, &pepper).map_err(err)
+        xz_core::vault::Vault::derive_key_for(&bytes_for_kdf, &password, &pepper_for_kdf)
+            .map_err(err)
     })
     .await
     .map_err(|e| format!("解锁任务失败：{e}"))??;
 
     let mut guard = state.session.lock().map_err(err)?;
-    guard.install(&path, &bytes, key).map_err(err)
+    guard.install(&path, &bytes, key).map_err(err)?;
+    // v3 库：把绑定材料记进 Vault，否则下次保存会写不出绑定块
+    if let Some((secret, fp)) = binding {
+        if let Some(u) = guard.un() {
+            u.vault.adopt_binding(secret, fp);
+        }
+    }
+    Ok(())
+}
+
+/// `binding_for` 的结果。
+struct BindingInfo {
+    /// 喂给 KDF 的 pepper。
+    pepper: Vec<u8>,
+    /// v3 才有：本机随机串 + 硬件指纹。要交给 `Vault::adopt_binding` 记住，
+    /// 否则下次保存写不出绑定块。
+    material: Option<(xz_core::secure::SecretBytes, Vec<u8>)>,
+}
+
+/// 按文件版本算出 pepper，并顺带带回 v3 的绑定材料。
+///
+/// v3 这条路径是「重装系统还能打开」的全部实现：绑定块在文件里，
+/// 用当前机器的硬件指纹解。换了硬件就解不开 —— 那就是设备绑定。
+fn binding_for(bytes: &[u8], header: &xz_core::codec::FileHeader) -> Result<BindingInfo, String> {
+    if header.version < 3 {
+        // 老库：沿用 v2 规则。machine::pepper() 内部会去读 machine.bind。
+        return Ok(BindingInfo {
+            pepper: crate::machine::pepper()?,
+            material: None,
+        });
+    }
+
+    let fp = crate::machine::hardware_fingerprint().ok_or(
+        "这台机器读不到硬件标识（SMBIOS），无法解开发它的密钥库。\n\n\
+         这个库是在一台能读到硬件标识的机器上创建的，请在原机器上打开。",
+    )?;
+    let parts = xz_core::codec::split_sealed(bytes).map_err(err)?;
+    let blob = parts.bind.ok_or("库文件缺少绑定块，文件可能损坏")?;
+    let secret = xz_core::binding::unwrap_binding_secret(&fp, blob).map_err(|_| {
+        "这个库绑定的不是当前设备（换过主板或系统盘？），无法打开。\n\n\
+         库文件本身没有问题 —— 是「设备绑定」在起作用。"
+            .to_owned()
+    })?;
+    let pepper = xz_core::binding::make_pepper_v3(secret.as_slice());
+    Ok(BindingInfo {
+        pepper,
+        material: Some((secret, fp)),
+    })
 }
 
 /// 查询免密码模式是否已开启。
@@ -998,33 +1067,37 @@ pub struct AutolockResult {
     save_error: Option<String>,
 }
 
-// ───────────────────────────── 导出 ─────────────────────────────
+// ───────────────────────────── 备份 / 导出 ─────────────────────────────
 
-/// 导出为 xlsx。**明文**，所以必须再过一次主密码。
+/// 导出加密备份（`.xzbak`）。
 ///
-/// 为什么导出前要重输密码：这是唯一一个能把全部密钥一次性倒出来的入口。
-/// 只要「已解锁」就放行，等于给同机任何进程开了一扇门 —— 而导出的是明文，
-/// 拿到就是全部。重输密码把这一步拉回「只有知道主密码的人能做」。
+/// 里面是一份完整的 xlsx（能被 Excel 打开），但**外面包了一层我们自己的
+/// 强加密**：Argon2id 64 MiB × 3 + AES-256-GCM。磁盘上不会出现明文表格 ——
+/// 这是这个产品之前最大的一个坑：备份是明文，而备份又是唯一能救命的动作。
 ///
-/// **免密码模式不豁免这一步。** 早先这里的写法是
+/// 两个密码：
+/// - `password`（主密码）：证明操作者是本人。这一步要重跑 KDF，走锁外。
+/// - `backup_password`（备份密码）：加密这个文件。可以和主密码不同，
+///   允许为空的话就等于没有加密，所以直接拒绝空。
+///
+/// **免密码模式不豁免主密码这一步。** 早先这里的写法是
 /// `if !auto_unlock_enabled() { verify_password }`，意思是开了免密码
 /// 就把导出的最后一道校验也一起关掉 —— 那等于「点一下设置，此后本机任何
-/// 程序都能让软件把整库导成明文 Excel」。免密码模式省的是**每次启动**的
-/// 输入，不该顺带把「一次性拿出全部明文」这个动作也变成免检。
-///
-/// 按专辑分工作表：左侧栏每个标签一张表，外加一张「全部」。
-/// 一条条目属于多个专辑时，会在每张对应的表里各出现一次，与界面筛选行为一致。
+/// 程序都能让软件把整库倒出来」。
 #[tauri::command]
-pub async fn export_xlsx(
+pub async fn export_backup(
     state: State<'_, AppState>,
     path: String,
     password: String,
+    backup_password: String,
 ) -> Result<usize, String> {
-    // 先确认是本人。这一步要重跑 KDF，走锁外。
+    if backup_password.is_empty() {
+        return Err("备份密码不能为空 —— 它就是这个文件的锁".to_owned());
+    }
+    // 先确认是本人
     confirm_master_password(&state, &password, "主密码不对").await?;
 
-    // 再在锁内取明文快照，拿到就放锁 —— 写盘要几十毫秒，
-    // 不该把整个会话卡在那里。
+    // 锁内取快照，拿到就放锁 —— 序列化 + 加密要几十毫秒，不该卡住会话。
     let (sheets, total) = {
         let mut guard = state.session.lock().map_err(err)?;
         let u = guard.un().ok_or("尚未解锁")?;
@@ -1072,43 +1145,65 @@ pub async fn export_xlsx(
         (sheets, total)
     };
 
-    // 写盘放到阻塞线程池：几万条可能上百毫秒，别占住主线程
+    // 生成 xlsx 字节 → 整体加密 → 落盘，全程在阻塞线程池。
     let path_buf = std::path::PathBuf::from(path);
-    tauri::async_runtime::spawn_blocking(move || crate::export::write_xlsx(&path_buf, &sheets))
-        .await
-        .map_err(|e| format!("导出任务失败：{e}"))??;
+    tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+        let xlsx = crate::export::write_xlsx_bytes(&sheets)?;
+        let sealed = crate::backup::seal(&xlsx, &backup_password)?;
+        // 写临时文件再改名：失败时不会在用户选的位置留下半截文件。
+        let tmp = path_buf.with_extension("xzbak.tmp");
+        std::fs::write(&tmp, &sealed).map_err(|e| format!("写不进去：{e}"))?;
+        std::fs::rename(&tmp, &path_buf).map_err(|e| {
+            let _ = std::fs::remove_file(&tmp);
+            format!("写不进去：{e}")
+        })
+    })
+    .await
+    .map_err(|e| format!("导出任务失败：{e}"))??;
 
     Ok(total)
 }
 
-/// 从 xlsx 导入。需要主密码 —— 导入会改动库内容。
+/// 从备份文件（`.xzbak`）或普通 xlsx 导入。
 ///
-/// 格式与导出对称：每张工作表是一张专辑，首行是按名字对位的表头
-/// （见 `export.rs`，列顺序可以变、可以多几列手写批注，只要「名称」列在）。
-/// 表头认不出来就跳过整张表，不去猜列序 —— 猜错会把密码塞进用户名。
+/// 两种都能吃：
+/// - `.xzbak`：先用备份密码解开，拿到 xlsx 字节再解析
+/// - `.xlsx`：直接解析（接受别人给的手工表格、老备份）
 ///
-/// 这条路径的定位是**灾备恢复**：换机器 / 重装系统之后，靠一份导出的
-/// Excel 把数据搬回来。所以它不能只搬「名称+密码」，自定义字段、
-/// 创建/过期时间、使用次数都要一起还原，否则「恢复」是假的。
+/// 需要主密码 —— 导入会改动库内容。
+///
+/// 这条路径的定位是**灾备恢复**，所以自定义字段、创建/过期时间、
+/// 使用次数都要一起还原，否则「恢复」是假的。
 ///
 /// 去重规则：**名称 + 账号都相同**视为同一条，跳过不导入。
-/// 这样同一个文件重复导入两次不会翻倍，也不会因为密码改过而重复。
 #[tauri::command]
-pub async fn import_xlsx(
+pub async fn import_backup(
     state: State<'_, AppState>,
     path: String,
     password: String,
+    backup_password: Option<String>,
 ) -> Result<ImportSummary, String> {
     if password.is_empty() {
         return Err("请输入主密码".to_owned());
     }
 
-    // 读文件要几十毫秒，放锁外；
-    // 密码校验同理 —— 「确认是本人」和「读文件」都不必持锁做。
+    // 读文件 + 解密（如果是备份）+ 解析，全放锁外。
     let path_buf = std::path::PathBuf::from(path);
-    let sheets = tauri::async_runtime::spawn_blocking(move || crate::export::read_xlsx(&path_buf))
-        .await
-        .map_err(|e| format!("读取任务失败：{e}"))??;
+    let backup_pw = backup_password.unwrap_or_default();
+    let sheets = tauri::async_runtime::spawn_blocking(move || -> Result<_, String> {
+        let raw = std::fs::read(&path_buf).map_err(|e| format!("打不开文件：{e}"))?;
+        if crate::backup::looks_like_backup(&raw) {
+            if backup_pw.is_empty() {
+                return Err("这是加密备份文件，需要输入备份密码".to_owned());
+            }
+            let xlsx = crate::backup::open(&raw, &backup_pw)?;
+            crate::export::read_xlsx_bytes(&xlsx)
+        } else {
+            crate::export::read_xlsx_bytes(&raw)
+        }
+    })
+    .await
+    .map_err(|e| format!("读取任务失败：{e}"))??;
 
     // 与导出一致：这一步不因免密码模式豁免。导入是往库里写数据，
     // 免检的话等于「本机任何程序都能往你的密钥库里塞条目」。

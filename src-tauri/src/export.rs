@@ -301,6 +301,11 @@ fn parse_ts(s: &str) -> Option<i64> {
     let hh: i64 = tp.next().map_or(Ok(0), |x| x.trim().parse()).ok()?;
     let mi: i64 = tp.next().map_or(Ok(0), |x| x.trim().parse()).ok()?;
     let ss: i64 = tp.next().map_or(Ok(0), |x| x.trim().parse()).ok()?;
+    // 时分秒必须落在合法区间。以前只 parse 不校验，`2026-01-01 99:99:99`
+    // 会被算成一个偏移好几天的时间戳 —— 导入是恢复路径，时间算错就是数据错。
+    if !(0..=23).contains(&hh) || !(0..=59).contains(&mi) || !(0..=59).contains(&ss) {
+        return None;
+    }
     let days = days_from_civil(y, mo, da);
     Some(days * 86_400 + hh * 3600 + mi * 60 + ss)
 }
@@ -332,33 +337,44 @@ fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
 
 // ───────────────────────── 写出 ─────────────────────────
 
-/// 把若干张表写成一个 xlsx。
+/// 把若干张表写成一个 xlsx 文件。
 ///
-/// 失败时会把半截文件删掉：导出的是**明文**，在用户选的位置上留一个
-/// 内容不完整、但仍然含密码的 `.xlsx`，比直接失败更糟 ——
-/// 用户会以为导出成功了，而那份文件既不能完整恢复，又照旧是明文。
+/// 失败时会把半截文件删掉：留一个内容不完整、但仍然含密码的 `.xlsx`，
+/// 比直接失败更糟 —— 用户会以为导出成功了。
 pub fn write_xlsx(path: &std::path::Path, sheets: &[Sheet]) -> Result<(), String> {
-    let result = write_xlsx_inner(path, sheets);
+    let result = (|| -> Result<(), String> {
+        let file = std::fs::File::create(path).map_err(|e| format!("建不了文件：{e}"))?;
+        write_xlsx_to(std::io::BufWriter::new(file), sheets)
+    })();
     if result.is_err() {
         let _ = std::fs::remove_file(path);
     }
     result
 }
 
-fn write_xlsx_inner(path: &std::path::Path, sheets: &[Sheet]) -> Result<(), String> {
+/// 把若干张表写进内存，返回完整的 xlsx 字节。
+///
+/// 给「加密备份」用：先在这里拿到明文表格，再在 `backup::seal` 里整体加密，
+/// 磁盘上从头到尾不出现明文。
+pub fn write_xlsx_bytes(sheets: &[Sheet]) -> Result<Vec<u8>, String> {
+    let mut sink = std::io::Cursor::new(Vec::new());
+    write_xlsx_to(&mut sink, sheets)?;
+    Ok(sink.into_inner())
+}
+
+fn write_xlsx_to<W: std::io::Write + std::io::Seek>(
+    sink: W,
+    sheets: &[Sheet],
+) -> Result<(), String> {
     if sheets.is_empty() {
         return Err("没有可导出的内容".to_owned());
     }
 
-    let file = std::fs::File::create(path).map_err(|e| format!("建不了文件：{e}"))?;
-    let mut zip = zip::ZipWriter::new(std::io::BufWriter::new(file));
+    let mut zip = zip::ZipWriter::new(sink);
     let opts = zip::write::SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated);
 
-    let put = |zip: &mut zip::ZipWriter<std::io::BufWriter<std::fs::File>>,
-               name: &str,
-               data: &str|
-     -> Result<(), String> {
+    let put = |zip: &mut zip::ZipWriter<W>, name: &str, data: &str| -> Result<(), String> {
         zip.start_file(name, opts).map_err(|e| e.to_string())?;
         zip.write_all(data.as_bytes()).map_err(|e| e.to_string())
     };
@@ -550,14 +566,25 @@ pub struct ImportedSheet {
     pub skipped: usize,
 }
 
-/// 读取 xlsx。
+/// 读取 xlsx 文件。
 ///
 /// 只要有一张表能按表头认出「名称」列就收下；认不出的表整张跳过 ——
 /// 不去猜列序，猜错会把密码塞进用户名。
 pub fn read_xlsx(path: &std::path::Path) -> Result<Vec<ImportedSheet>, String> {
     let file = std::fs::File::open(path).map_err(|e| format!("打不开文件：{e}"))?;
+    read_xlsx_from(file)
+}
+
+/// 从内存里的 xlsx 字节读取（加密备份解出来之后走这条）。
+pub fn read_xlsx_bytes(bytes: &[u8]) -> Result<Vec<ImportedSheet>, String> {
+    read_xlsx_from(std::io::Cursor::new(bytes))
+}
+
+fn read_xlsx_from<R: std::io::Read + std::io::Seek>(
+    reader: R,
+) -> Result<Vec<ImportedSheet>, String> {
     let mut zip =
-        zip::ZipArchive::new(file).map_err(|e| format!("这不是有效的 Excel 文件：{e}"))?;
+        zip::ZipArchive::new(reader).map_err(|e| format!("这不是有效的 Excel 文件：{e}"))?;
 
     // Excel 重新保存过的文件会把字符串挪进共享字符串表。
     let shared = read_shared_strings(&mut zip);

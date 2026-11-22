@@ -38,7 +38,19 @@ pub use error::{Error, Result};
 pub use vault::Vault;
 
 /// vault 格式版本（写入时使用的最新版本）。
-pub const FORMAT_VERSION: u16 = 2;
+///
+/// ## 版本 3 改了什么
+///
+/// 文件头之后多了一个**绑定块**：本机随机串用硬件指纹加密封在文件里。
+/// 于是「重装系统 / `%APPDATA%` 被清空」不再等于数据报废 —— 硬件没变就能靠
+/// 文件里那份把库打开；换主板或换系统盘则依然打不开。
+///
+/// 同时 pepper 的构造去掉了计算机名与卷序列号（两者都会因为改名、格式化而变），
+/// 见 `binding::make_pepper_v3`。
+///
+/// 版本 2 的文件照常能读（按老规则解 pepper），写回时也保持版本 2，
+/// 不会被偷偷升级。
+pub const FORMAT_VERSION: u16 = 3;
 
 /// 产品标识，写进 vault 文件头，便于将来多产品共用工具链时区分。
 pub const MAGIC: &[u8; 8] = b"XZVLT\x00\x02\x00";

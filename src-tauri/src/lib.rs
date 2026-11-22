@@ -5,6 +5,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+pub mod backup;
 pub mod clipboard;
 pub mod commands;
 pub mod export;
@@ -60,8 +61,8 @@ pub fn run() -> Result<(), String> {
             commands::autolock_minutes,
             commands::set_autolock,
             commands::ui_ready,
-            commands::export_xlsx,
-            commands::import_xlsx,
+            commands::export_backup,
+            commands::import_backup,
         ])
         .setup(|_app| {
             use tauri::Manager as _;

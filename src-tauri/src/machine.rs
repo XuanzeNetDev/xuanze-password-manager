@@ -1,6 +1,12 @@
-//! 机器绑定的宿主侧：DPAPI 封存本机随机串，产出喂给核心库的 pepper。
+//! 机器绑定的宿主侧：读硬件身份、管 DPAPI 封存的材料、产出 pepper 的来源。
 //!
-//! 核心库自己不做系统调用（`deny(unsafe_code)`），所以 DPAPI 在这里。
+//! 核心库自己不做系统调用（`deny(unsafe_code)`），所以这些都在这儿。
+//!
+//! 这个模块管三样东西：
+//!
+//! - **硬件指纹**（[`hardware_fingerprint`]）：SMBIOS UUID，重装不变、换板才变
+//! - **机器身份**（[`machine_identity`]）：机器名 + 卷序列号，**只给 v2 老库用**
+//! - **免密码模式**（`enable_auto_unlock`）：DPAPI 封存主密钥，与绑定无关
 
 use std::path::PathBuf;
 
@@ -268,6 +274,10 @@ fn write_registry(ids: &[String]) -> Result<(), String> {
 
 /// 本机标识：机器名 + 系统卷序列号。
 ///
+/// **只用于 v2 格式的老库**（那些库的 pepper 里混了这两个值）。
+/// 新库（v3）改用 [`hardware_fingerprint`]，因为这里两个值都会随便变：
+/// 计算机名右键就能改，卷序列号格式化就重新生成。
+///
 /// 两个成分都走 Win32 API 读取，不读环境变量。
 ///
 /// 为什么：`COMPUTERNAME` 和 `SystemDrive` 都是用户态可改的环境变量，
@@ -284,6 +294,93 @@ fn machine_identity() -> String {
         s.push_str("fallback-host");
     }
     s
+}
+
+/// 主板 UUID（SMBIOS Type 1 的 UUID 字段）。
+///
+/// 这是「这台设备」最稳的标识：
+///
+/// - 重装系统 → 不变
+/// - 格式化硬盘 → 不变
+/// - 改计算机名 → 不变
+/// - **换主板 → 变**
+///
+/// 正好是「设备绑定」想表达的语义。
+///
+/// 返回 `None` 表示读不到（很老的机器、部分虚拟机、SMBIOS 里没填）。
+/// 调用方必须给兜底路径 —— 不能因为读不到就不让用。
+fn smbios_uuid() -> Option<[u8; 16]> {
+    use windows_sys::Win32::System::SystemInformation::GetSystemFirmwareTable;
+
+    // 'RSMB' 的多字符常量值：MSVC 把第一个字符放在最高位，
+    // 所以 'R'<<24 | 'S'<<16 | 'M'<<8 | 'B' = 0x52534D42。
+    // （写成 0x42534D52 是按小端读出来的反序值，Windows 不认。）
+    const RSMB: u32 = 0x5253_4D42;
+
+    // SAFETY: 两段式调用 —— 先问长度、再按长度分配缓冲，缓冲由本函数持有。
+    let size = unsafe { GetSystemFirmwareTable(RSMB, 0, std::ptr::null_mut(), 0) };
+    if size < 8 {
+        return None;
+    }
+    let mut buf = vec![0u8; size as usize];
+    // SAFETY: buf 至少 size 字节，函数只在这段可写区间内填充。
+    let got = unsafe { GetSystemFirmwareTable(RSMB, 0, buf.as_mut_ptr().cast(), size) };
+    if got == 0 || got as usize > buf.len() {
+        return None;
+    }
+    let data = &buf[..got as usize];
+
+    // RawSMBIOSData：4 字节版本信息，然后 u32 Length，然后是结构表本身。
+    let table_len = u32::from_le_bytes([data[4], data[5], data[6], data[7]]) as usize;
+    let table = data.get(8..8usize.checked_add(table_len)?)?;
+
+    // 逐个结构扫，找 Type 1（System Information）。
+    let mut off = 0usize;
+    while off + 4 <= table.len() {
+        let stype = table[off];
+        let slen = table[off + 1] as usize;
+        if slen < 4 || off + slen > table.len() {
+            break;
+        }
+        // Type 1 的 UUID 在结构内偏移 0x08，长 16 字节；整个结构至少 0x19 字节。
+        if stype == 1 && slen >= 0x19 {
+            let mut uuid = [0u8; 16];
+            uuid.copy_from_slice(&table[off + 8..off + 24]);
+            // 全 0 / 全 FF 是「厂商没填」，不能当设备标识用 ——
+            // 那会让一大批机器共用同一个指纹。
+            if uuid.iter().all(|&b| b == 0) || uuid.iter().all(|&b| b == 0xFF) {
+                return None;
+            }
+            return Some(uuid);
+        }
+        // 跳到下一个结构：结构头 + 格式化区，以双 NUL 结束（有的固件只补一个）。
+        let mut next = off + slen;
+        while next + 1 < table.len() {
+            if table[next] == 0 && table[next + 1] == 0 {
+                next += 2;
+                break;
+            }
+            next += 1;
+        }
+        if next <= off {
+            break;
+        }
+        off = next;
+    }
+    None
+}
+
+/// 当前设备的硬件指纹。读不到时返回 `None`。
+///
+/// 只收「换硬件才会变」的标识。前端拿到 `None` 就该退回 v2 的绑定规则
+/// （那条路会绑定机器名和卷序列号，虽然脆，但总比没有强）。
+#[must_use]
+pub fn hardware_fingerprint() -> Option<Vec<u8>> {
+    let uuid = smbios_uuid()?;
+    let mut out = Vec::with_capacity(16 + 12);
+    out.extend_from_slice(b"xzvlt-hw-v1\x00");
+    out.extend_from_slice(&uuid);
+    Some(out)
 }
 
 /// 机器名，走 `GetComputerNameExW`。

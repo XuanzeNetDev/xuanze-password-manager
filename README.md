@@ -254,6 +254,12 @@ Rust 之间走 Tauri IPC，而 Tauri v2 的 IPC 不校验调用方身份 —— 
 旧数据块交给系统回收，本软件不做磁盘擦除。磁盘会落到别人手里的话，
 应该对整盘启用 BitLocker，而不是指望本软件抹掉痕迹。
 
+还有一处值得单独说，因为它和这个项目别处的严格程度不太一致：**你输入的主密码
+从输入框传到 Rust 的路上，会经过一段 JavaScript 字符串。** `invoke` 的参数要
+被 `JSON.stringify` 序列化，那份明文副本在 JS 堆上没法 zeroize，只能等 GC。
+这是 WebView 架构的固有代价 —— Tauri 和 Electron 的密码管理器都躲不开。
+Rust 侧收到之后立刻放进 `SecretBytes`，能擦的都擦了；JS 这一段擦不掉。
+
 ### 免密码模式
 
 设置里有一个开关，默认关闭。

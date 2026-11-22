@@ -110,7 +110,6 @@ SSH 私钥；笔记软件存这些等于把明文摊在桌面上。这个产品�
 
 数据只能在本软件内查看和使用。这是设计决定：一个可以随时导出为 CSV 的密码管理器，
 等于把加密降级为一道附加步骤。需要迁移时，逐条复制是唯一路径。
-命令行工具 `xzc` 同样不提供导出。
 
 ### 外部工具无法读取
 
@@ -309,7 +308,6 @@ SSH 私钥；笔记软件存这些等于把明文摊在桌面上。这个产品�
 .
 ├── crates/
 │   ├── xz-core/      核心库：格式、加密、KDF、索引、搜索、内存擦除
-│   ├── xzc/          命令行工具：不装 GUI 也能用
 │   └── xz-bench/     性能基准
 ├── src-tauri/        桌面壳（Tauri v2 命令层 + 自动锁定 + 剪贴板）
 ├── src/              前端界面（原生 TS，无框架）
@@ -328,36 +326,11 @@ cargo test -p xz-core
 # 性能基准
 cargo run --release -p xz-bench
 
-# 命令行
-cargo run --release -p xzc -- --help
 
 # 桌面应用（需要 WebView2 与 Tauri CLI）
 cargo tauri dev
 cargo tauri build
 ```
-
-## 命令行速览
-
-```bash
-xzc init   my.xzvlt --password -
-xzc add    my.xzvlt --password - --name "OpenAI 生产 Key" --kind api-key \
-                          --secret sk-xxxx --tag api --tag prod
-xzc find   my.xzvlt --password - openai
-xzc show   my.xzvlt --password - <id> --reveal
-```
-
-`--password -` 表示从环境变量 `XZ_PASSWORD` 读取，避免密码进 shell 历史。
-
-> **注意：`xzc` 建的库和桌面端的库不通用。**
->
-> 桌面端建库时，主密钥派生混入了本机 DPAPI 封存的随机串（机器绑定）；
-> `xzc` 不绑定机器，派生材料不同。两者算出来的密钥不一样，
-> 所以谁建的库谁来开，互相打不开。
->
-> 这是有意为之：`xzc` 的定位是「不进 GUI 也能读写、能复现格式问题」，
-> 不是桌面端的第二入口。两个端的库无法直接互换。
-
----
 
 ## 状态
 
@@ -365,7 +338,7 @@ xzc show   my.xzvlt --password - <id> --reveal
 `cargo clippy` 干净，安装包 2 MB 可正常安装运行。
 
 **能用的：** 建库、解锁、增删改查、搜索、专辑筛选、复制、自动锁定、
-改主密码、深色/浅色主题、命令行工具 `xzc`。
+改主密码、深色/浅色主题。
 
 **后续版本方向：** 全局热键（在任意程序内唤出搜索）、浏览器自动填充、
 移动端。排期见 [ROADMAP.md](docs/ROADMAP.md)。云同步不在计划内。

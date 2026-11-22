@@ -2,7 +2,6 @@
 resolver = "2"
 members = [
     "crates/xz-core",
-    "crates/xzc",
     "crates/xz-bench",
     "src-tauri",
 ]

@@ -346,26 +346,24 @@ pub async fn vault_open(
     guard.install(&path, &bytes, key).map_err(err)
 }
 
-/// 关闭库：先保存（如果脏），再锁定。
+/// 关闭库：保存（如果脏）后锁定，两个动作都在 Session::lock 里完成。
 #[tauri::command]
 pub fn vault_close(state: State<'_, AppState>) -> Result<(), String> {
     let mut guard = state.session.lock().map_err(err)?;
-    if let Some(u) = guard.un() {
-        if u.vault.is_dirty() && u.vault.path().is_some() {
-            u.vault.save().map_err(err)?;
-        }
-    }
-    guard.lock();
-    Ok(())
+    // lock() 内部会先落盘再擦除，不必在这里重复一次。
+    // 落盘失败时它仍然锁定，但会把错误返回上来 —— 用户需要知道改动没存住。
+    let result = guard.lock();
+    clipboard::purge_if_ours();
+    result
 }
 
 /// 仅锁定，不保存（用于「立即锁库」快捷键）。
 #[tauri::command]
 pub fn vault_lock(state: State<'_, AppState>) -> Result<(), String> {
     let mut guard = state.session.lock().map_err(err)?;
-    guard.lock();
+    let result = guard.lock();
     clipboard::purge_if_ours();
-    Ok(())
+    result
 }
 
 /// 默认库文件路径。
@@ -599,11 +597,17 @@ pub fn entry_reveal(
         .ok_or_else(|| format!("条目不存在：{id}"))?;
     match field_index {
         None => Ok(e.secret.clone()),
-        Some(i) => e
-            .fields
-            .get(i)
-            .map(|f| f.value.clone())
-            .ok_or_else(|| format!("字段不存在：{i}")),
+        Some(i) => {
+            let f = e.fields.get(i).ok_or_else(|| format!("字段不存在：{i}"))?;
+            // 非敏感字段在 entry_get 里本来就明文返回，不必走 reveal。
+            // 在这里挡住，「reveal 只取敏感内容」这个契约就是代码保证的，
+            // 不靠调用方自觉 —— 否则将来若把 entry_get 改成一律返回空串，
+            // 这里就成了后门。
+            if !f.secret {
+                return Err("这个字段不是敏感字段，不需要单独显示".to_owned());
+            }
+            Ok(f.value.clone())
+        }
     }
 }
 

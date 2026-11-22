@@ -131,7 +131,15 @@ impl Session {
     }
 
     /// 锁定：擦除密钥、清空明文。
-    pub fn lock(&mut self) {
+    /// 锁定会话。返回锁前落盘的结果。
+    ///
+    /// 落盘失败时**仍然锁定**（安全优先：不能因为写不进去就让库停在解锁态），
+    /// 但把错误交回调用方 —— 调用方必须让用户看见，否则用户以为「改了、存了」，
+    /// 实际上那些改动随锁定一起消失了。
+    ///
+    /// 返回 `Ok(())` 表示「本来就没脏数据」或「脏数据已成功落盘」。
+    pub fn lock(&mut self) -> Result<(), String> {
+        let mut save_err = None;
         if let Session::Unlocked(u) = self {
             // 锁之前先把脏数据落盘。
             //
@@ -139,14 +147,18 @@ impl Session {
             // 用一次热键就写一次盘太重），但 `Vault::lock()` 会清掉 dirty。
             // 于是「解锁期间用过几次 → 自动锁定」这条路径下，使用计数全丢，
             // 热度榜越用越不准，而 Ctrl+Shift+1..9 正是靠热度排序。
-            //
-            // 落盘失败不阻断锁定：安全优先，宁可丢计数也不能让库停在解锁态。
             if u.vault.is_dirty() && u.vault.path().is_some() {
-                let _ = u.vault.save();
+                if let Err(e) = u.vault.save() {
+                    save_err = Some(format!("锁定前没能保存改动：{e}"));
+                }
             }
             u.vault.lock();
         }
         *self = Session::Locked;
+        match save_err {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
     }
 
     /// 刷新活跃时间。
@@ -187,7 +199,13 @@ impl Session {
             Session::Locked => false,
         };
         if should_lock {
-            self.lock();
+            // 自动锁定由定时器触发，没有人在等返回值。落盘失败只能记日志 ——
+            // 但至少不再是彻底静默：debug 构建下会打出来。
+            if let Err(e) = self.lock() {
+                #[cfg(debug_assertions)]
+                eprintln!("[autolock] {e}");
+                let _ = &e;
+            }
         }
         should_lock
     }

@@ -4805,14 +4805,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "xzc"
-version = "1.0.0"
-dependencies = [
- "serde_json",
- "xz-core",
-]
-
-[[package]]
 name = "yoke"
 version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"

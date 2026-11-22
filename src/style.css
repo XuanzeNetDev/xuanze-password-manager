@@ -877,6 +877,7 @@ textarea.in {
 }
 
 .tr:hover .cellacts,
+.tr.sel .cellacts,
 .secret-wrap:focus-within .cellacts {
   opacity: 1;
   pointer-events: auto;
@@ -904,6 +905,7 @@ textarea.in {
 }
 
 .tr:hover .cellacts,
+.tr.sel .cellacts,
 .secret-wrap:focus-within .cellacts {
   opacity: 1;
 }

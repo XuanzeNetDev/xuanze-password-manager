@@ -297,10 +297,16 @@ function swapScreen(next: () => void): void {
         fill: "forwards",
       },
     );
-    // 旧层盖在新层上面完成淡出，新层就已经在下面准备好了
+    // 旧层盖在新层上面完成淡出，新层就已经在下面准备好了。
+    //
+    // 必须同时关掉 pointer-events：否则这 180 ms 里旧层仍在接收点击，
+    // 用户快速双击会打到「已经不属于当前界面、马上就要被删掉」的节点上
+    // （比如锁屏时连点两次登录，第二次落到旧闭包的 busy 标志上）。
+    // 视觉上它还看得见，但已经不该再响应任何输入。
     old.style.position = "absolute";
     old.style.inset = "0";
     old.style.zIndex = "5";
+    old.style.pointerEvents = "none";
     anim.finished
       .then(() => {
         old.remove();

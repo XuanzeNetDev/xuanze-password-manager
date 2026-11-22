@@ -296,8 +296,14 @@ impl Vault {
             .ok_or_else(|| Error::EntryNotFound(id.to_owned()))?;
         e.use_count = e.use_count.saturating_add(1);
         e.last_used_at = now;
-        let snapshot = e.clone();
-        self.index.upsert(&snapshot);
+        // 直接把借用的条目交给索引，不 clone。
+        //
+        // 原先写的是 `let snapshot = e.clone(); index.upsert(&snapshot)` —— 那是
+        // 把整条 Entry（secret、notes、所有自定义字段）复制一遍再扔掉，而
+        // IndexItem::from 只读 id/kind/name/username/url/tags/时间戳这几个字段。
+        // 复制出来的副本虽然会 ZeroizeOnDrop，但内存抖动是真的，而这是
+        // 「按一下复制」的热路径 —— 一条 10 KB 备注的条目每次都白拷 10 KB。
+        self.index.upsert(e);
         self.dirty = true;
         Ok(())
     }

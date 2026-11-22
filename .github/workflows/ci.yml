@@ -40,9 +40,11 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      # 顺序有讲究：setup-node 的 cache: pnpm 需要 pnpm 已经装好，
+      # 所以 pnpm/action-setup 必须排前面。反了会在 setup-node 那步直接失败。
       - uses: pnpm/action-setup@v4
         with:
-          version: 9
+          version: 11
 
       - uses: actions/setup-node@v4
         with:

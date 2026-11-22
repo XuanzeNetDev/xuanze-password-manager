@@ -150,7 +150,7 @@ pub fn enable_auto_unlock(vault_id: &str, key: &[u8]) -> Result<(), String> {
     let payload = Zeroizing::new(format!("{vault_id}\n{}", to_hex(key).as_str()));
     let sealed = Zeroizing::new(dpapi_protect(payload.as_bytes())?);
     std::fs::write(&path, sealed.as_slice()).map_err(|e| format!("写不了免密码标记：{e}"))?;
-    restrict_acl(&path);
+    tighten(&path);
     Ok(())
 }
 
@@ -474,7 +474,7 @@ fn local_secret() -> Result<Zeroizing<Vec<u8>>, String> {
         std::fs::create_dir_all(dir).map_err(|e| format!("建不了目录：{e}"))?;
     }
     std::fs::write(&path, sealed.as_slice()).map_err(|e| format!("写不了绑定材料：{e}"))?;
-    restrict_acl(&path);
+    tighten(&path);
     // 栈上这一份也要擦：它没有 Drop，离开作用域只是「不再引用」。
     let out = Zeroizing::new(secret.to_vec());
     secret.zeroize();
@@ -495,12 +495,14 @@ pub fn pepper() -> Result<Vec<u8>, String> {
 /// 那个变量任何进程都能在拉起子进程前改掉，改完这里就会给
 /// 「攻击者指定的那个用户名」授权，等于把保护反着用。
 ///
-/// 失败也不影响加密强度，只是少一层文件系统保护。
-fn restrict_acl(path: &std::path::Path) {
+/// 失败不影响加密强度，只是少一层文件系统保护。但**不能静默**：
+/// 如果这一步失败了，`auto_unlock` 那种「本机任何程序都能读」的性质
+/// 可能扩散到别的账户。返回布尔值，调用方在 debug 构建下记一笔。
+fn restrict_acl(path: &std::path::Path) -> bool {
     let Some(sid) = current_user_sid() else {
-        return;
+        return false;
     };
-    let _ = std::process::Command::new("icacls")
+    std::process::Command::new("icacls")
         .arg(path)
         .arg("/inheritance:r")
         .arg("/grant:r")
@@ -509,7 +511,17 @@ fn restrict_acl(path: &std::path::Path) {
         .arg(format!("{sid}:F"))
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .status();
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// 收紧权限并处理失败：debug 下留痕，release 下不打扰用户。
+fn tighten(path: &std::path::Path) {
+    if !restrict_acl(path) {
+        #[cfg(debug_assertions)]
+        eprintln!("[machine] 收紧文件权限失败：{}", path.display());
+    }
 }
 
 /// 取当前进程所属用户的 SID 字符串。

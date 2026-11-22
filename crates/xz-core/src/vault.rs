@@ -74,6 +74,20 @@ impl Clone for Binding {
     }
 }
 
+impl Binding {
+    /// 按 v3 规则派生主密钥。
+    ///
+    /// **「这个库用哪套 pepper 规则」只有这一个地方说了算。**
+    ///
+    /// 之前这个知识散在三处：打开（`commands::binding_for`）、改密码后重封
+    /// （`reseal_snapshot`）、改密码后换内存密钥（`change_password_bound`）。
+    /// 三处里两处写对了、一处漏了，结果就是「改了个密码把库改坏」——
+    /// 文件头写着 v3、主密钥却按 v2 算。收敛到这里之后，不会再各写各的。
+    fn derive_key(&self, password: &str, salt: &[u8], params: KdfParams) -> Result<SecretBytes> {
+        crate::binding::derive_bound_key_v3(password.as_bytes(), self.secret.as_slice(), salt, params)
+    }
+}
+
 /// 打开后的 vault。
 pub struct Vault {
     /// 落盘路径。`None` 表示纯内存（新建未保存）。
@@ -531,10 +545,17 @@ impl Vault {
     ) -> Result<()> {
         let params = params.unwrap_or(self.kdf);
         let salt = kdf::random_salt();
-        let master_key = if pepper.is_empty() {
-            kdf::derive_master_key(new_password.as_bytes(), &salt, params)?
-        } else {
-            crate::binding::derive_bound_key(new_password.as_bytes(), pepper, &salt, params)?
+        // 和 `reseal_snapshot` 一样：规则跟着库走，不跟着调用方走。
+        // 两处必须一致，否则「写盘用的规则」和「内存里那把钥匙」会对不上。
+        let master_key = match &self.binding {
+            Some(b) => b.derive_key(new_password, &salt, params)?,
+            None => {
+                if pepper.is_empty() {
+                    kdf::derive_master_key(new_password.as_bytes(), &salt, params)?
+                } else {
+                    crate::binding::derive_bound_key(new_password.as_bytes(), pepper, &salt, params)?
+                }
+            }
         };
         self.master_key.wipe();
         self.master_key = master_key;
@@ -564,10 +585,18 @@ impl Vault {
     /// 派生本身是慢的（这正是它安全的原因），所以调用方应该把它放到锁外、
     /// 后台线程里做 —— 见 `kdf_material` / `matches_master_key`。
     pub fn verify_password_bound(&self, password: &str, pepper: &[u8]) -> Result<()> {
-        let key = if pepper.is_empty() {
-            kdf::derive_master_key(password.as_bytes(), &self.salt, self.kdf)?
-        } else {
-            crate::binding::derive_bound_key(password.as_bytes(), pepper, &self.salt, self.kdf)?
+        // 规则同样跟着库走（v3 用 binding，v2 用外部 pepper）。
+        // 这里也是「三处里被漏掉的第四处」—— 少了它，改密码之后
+        // 库能打开，但「再输一次密码」的校验会一直报错。
+        let key = match &self.binding {
+            Some(b) => b.derive_key(password, &self.salt, self.kdf)?,
+            None => {
+                if pepper.is_empty() {
+                    kdf::derive_master_key(password.as_bytes(), &self.salt, self.kdf)?
+                } else {
+                    crate::binding::derive_bound_key(password.as_bytes(), pepper, &self.salt, self.kdf)?
+                }
+            }
         };
         if !crate::secure::ct_eq(key.as_slice(), self.master_key.as_slice()) {
             return Err(Error::BadPasswordOrTampered);
@@ -734,10 +763,24 @@ pub struct VaultSnapshot {
 /// 不需要持有 `Vault`，因此可以在锁外调用。
 pub fn reseal_snapshot(snap: &VaultSnapshot, new_password: &str, pepper: &[u8]) -> Result<Vec<u8>> {
     let salt = kdf::random_salt();
-    let key = if pepper.is_empty() {
-        kdf::derive_master_key(new_password.as_bytes(), &salt, snap.kdf)?
-    } else {
-        crate::binding::derive_bound_key(new_password.as_bytes(), pepper, &salt, snap.kdf)?
+    // pepper 规则必须和「这个库是怎么建的」一致，而不是由调用方随手给一个。
+    //
+    // 这里曾经只看 `pepper` 空不空，于是应用层传进来的 v2 pepper
+    // （`machine::pepper()`，含机器名与卷序列号）被用在 v3 库上：
+    // 文件头写成 v3、绑定块也写了，但主密钥是按 v2 规则派生的。
+    // 再打开时按 v3 算 pepper —— 直接「密码错误或文件已被篡改」。
+    // 表现就是「改了个密码把库改坏了」。
+    let key = match &snap.binding {
+        // v3：绑定材料就在快照里，外部 pepper 无关
+        Some(b) => b.derive_key(new_password, &salt, snap.kdf)?,
+        // v2：沿用调用方给的（含机器名与卷序列号的）pepper
+        None => {
+            if pepper.is_empty() {
+                kdf::derive_master_key(new_password.as_bytes(), &salt, snap.kdf)?
+            } else {
+                crate::binding::derive_bound_key(new_password.as_bytes(), pepper, &salt, snap.kdf)?
+            }
+        }
     };
 
     let header = FileHeader {
@@ -1133,6 +1176,92 @@ mod binding_tests {
         // 补上之后就能写
         opened.adopt_binding(recovered, b"fp".to_vec());
         assert!(opened.seal().is_ok());
+    }
+
+    /// 改密码之后，v3 库必须还能用**新密码**打开。
+    ///
+    /// 这条守的是一个真实踩过的坑：`reseal_snapshot` 只用「外部给的 pepper」
+    /// 派生主密钥，而应用层那里传的是 v2 规则的 pepper
+    /// （`machine::pepper()`，含机器名与卷序列号）。于是改完密码，
+    /// 文件头写着 v3、带着绑定块，主密钥却是按 v2 规则算的 ——
+    /// 再打开时按 v3 算 pepper，直接「密码错误或文件已被篡改」。
+    #[test]
+    fn v3_rekey_then_reopen_with_new_password() {
+        use crate::kdf::KdfParams;
+
+        let secret = [5u8; crate::binding::BINDING_SECRET_LEN];
+        let fp: Vec<u8> = b"hardware-A".to_vec();
+
+        let mut v = Vault::create_bound_v3("old-password", KdfParams::light(), &secret, fp.clone())
+            .unwrap();
+        v.insert(crate::entry::Entry {
+            id: "x".into(),
+            kind: crate::entry::EntryKind::Login,
+            name: "测试".into(),
+            username: "u".into(),
+            secret: "s".into(),
+            url: String::new(),
+            fields: vec![],
+            tags: vec![],
+            notes: String::new(),
+            created_at: 1,
+            updated_at: 1,
+            expires_at: 0,
+            use_count: 0,
+            last_used_at: 0,
+        })
+        .unwrap();
+        let snap = v.export_all();
+
+        // 模拟 commands::vault_rekey 的调用：它传的是 v2 规则的 pepper。
+        let v2_pepper = crate::binding::make_pepper(&[9u8; 32], "PC-FAKE");
+        let resealed = reseal_snapshot(&snap, "new-password", &v2_pepper).unwrap();
+
+        // 用新密码 + v3 规则重开
+        let header = FileHeader::parse(&resealed).unwrap();
+        assert_eq!(header.version, 3);
+        let parts = codec::split_sealed(&resealed).unwrap();
+        let recovered = crate::binding::unwrap_binding_secret(&fp, parts.bind.unwrap()).unwrap();
+        let key = crate::binding::derive_bound_key_v3(
+            b"new-password",
+            recovered.as_slice(),
+            &header.salt,
+            header.kdf,
+        )
+        .unwrap();
+        let reopened = Vault::open_bound_with_key(&resealed, key);
+        assert!(
+            reopened.is_ok(),
+            "改密码之后必须能用新密码打开，否则就是「改了个密码把库改坏了」"
+        );
+        assert_eq!(reopened.unwrap().len(), 1);
+    }
+
+    /// `change_password_bound` 之后，内存里的主密钥也要符合 v3 规则。
+    #[test]
+    fn v3_change_password_keeps_master_key_consistent() {
+        use crate::kdf::KdfParams;
+
+        let secret = [6u8; crate::binding::BINDING_SECRET_LEN];
+        let fp: Vec<u8> = b"hardware-A".to_vec();
+        let mut v =
+            Vault::create_bound_v3("old", KdfParams::light(), &secret, fp.clone()).unwrap();
+
+        // 应用层传 v2 pepper；v3 库应该忽略它，按 binding 自己算
+        let v2_pepper = crate::binding::make_pepper(&[9u8; 32], "PC-FAKE");
+        v.change_password_bound("new", None, &v2_pepper).unwrap();
+
+        // 用 v3 规则独立派生一遍，和内存里的主密钥比
+        let (params, salt) = v.kdf_material();
+        let expected =
+            crate::binding::derive_bound_key_v3(b"new", &secret, &salt, params).unwrap();
+        assert!(
+            v.matches_master_key(&expected),
+            "改密码后内存主密钥必须按 v3 规则派生"
+        );
+
+        // 用新密码自校验也应该过
+        assert!(v.verify_password_bound("new", &v2_pepper).is_ok());
     }
 
     /// `verify_password` 必须真的拒绝错密码。

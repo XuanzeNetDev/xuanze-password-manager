@@ -55,10 +55,6 @@ pub fn copy_with_ttl(text: &str, ttl: Duration) -> Result<(), String> {
     Ok(())
 }
 
-/// 写入剪贴板（不安排清除）。用于非敏感内容，如用户名。
-pub fn copy_plain(text: &str) -> Result<(), String> {
-    write_clipboard(text)
-}
 
 /// 立即尝试清除（如果剪贴板还是我们写的内容）。
 ///

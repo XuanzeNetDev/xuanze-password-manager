@@ -1,4 +1,4 @@
-﻿# 璇泽密钥库 · 文件格式规范
+# 璇泽密钥库 · 文件格式规范
 
 > **格式版本：3**（头里 `version` 字段 `= 0x0003`，代码常量 `FORMAT_VERSION = 3`）
 > 状态：稳定 · 最后修改：2026-11-22
@@ -452,4 +452,4 @@ verify_block = nonce(12) || AES-256-GCM(verify_key, nonce, "xzvlt/v1/verify-ok",
 | `save_and_open_from_disk` | 原子保存无残留临时文件 |
 | `change_password_then_old_fails` | 换密码后旧密码失效 |
 
-`cargo test -p xz-core` 应全绿（当前 67 项）。
+`cargo test -p xz-core` 应全绿（当前 69 项）。

@@ -631,8 +631,16 @@ pub async fn vault_rekey(
     };
 
     let new_pw = new_password.clone();
+    // v3 库的绑定材料在快照里，不需要去碰 machine.bind ——
+    // 那一步在「%APPDATA% 被清过」的机器上会失败，而那种机器上
+    // 改密码本来是完全可行的。
+    let needs_v2_pepper = snapshot.binding.is_none();
     let sealed = tauri::async_runtime::spawn_blocking(move || -> Result<Vec<u8>, String> {
-        let pepper = crate::machine::pepper()?;
+        let pepper = if needs_v2_pepper {
+            crate::machine::pepper()?
+        } else {
+            Vec::new()
+        };
         xz_core::vault::reseal_snapshot(&snapshot, &new_pw, &pepper).map_err(err)
     })
     .await
@@ -650,7 +658,12 @@ pub async fn vault_rekey(
     {
         let mut guard = state.session.lock().map_err(err)?;
         let u = guard.un().ok_or("尚未解锁")?;
-        let pepper = crate::machine::pepper()?;
+        // 同上：v3 库不需要 machine.bind
+        let pepper = if u.vault.has_binding() {
+            Vec::new()
+        } else {
+            crate::machine::pepper()?
+        };
         u.vault
             .change_password_bound(&new_password, None, &pepper)
             .map_err(err)?;

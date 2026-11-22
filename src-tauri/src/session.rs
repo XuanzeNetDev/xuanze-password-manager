@@ -11,7 +11,6 @@
 //! - 自动锁定靠**单调时钟**判断闲置，不依赖前端定时器（前端可以被挂起）。
 //! - 任何一次前端交互都刷 `last_activity`，所以「正在用」永远不会被锁掉。
 
-use std::path::PathBuf;
 use std::time::Instant;
 
 /// 两次活跃刷新之间的最小间隔。前端节流是 6 秒，这里取 4 秒留余量。
@@ -40,7 +39,6 @@ fn auto_lock_setting() -> Option<std::time::Duration> {
 /// 一台开着的机器可以几十年不重新验证身份。
 const MAX_SESSION: std::time::Duration = std::time::Duration::from_secs(8 * 3600);
 
-use xz_core::kdf::KdfParams;
 use xz_core::vault::{Vault, VaultStats};
 
 /// 会话状态。
@@ -84,21 +82,6 @@ impl Session {
         }
     }
 
-    /// 新建库并进入解锁态。
-    pub fn create(&mut self, password: &str, params: KdfParams) -> xz_core::Result<()> {
-        // 建库时就绑到本机：之后的 pepper 缺失或换了机器都打不开
-        let pepper =
-            crate::machine::pepper().map_err(|_| xz_core::Error::Corrupt("机器绑定失败"))?;
-        let vault = Vault::create_bound(password, params, &pepper)?;
-        *self = Session::Unlocked(Box::new(Unlocked {
-            vault,
-            last_activity: Instant::now(),
-            started_at: Instant::now(),
-            auto_lock: auto_lock_setting(),
-        }));
-        Ok(())
-    }
-
     /// 接管一个已经建好的 `Vault`（建库流程用）。
     ///
     /// KDF 在锁外跑完了，这里只做状态切换。
@@ -121,22 +104,6 @@ impl Session {
         key: xz_core::secure::SecretBytes,
     ) -> xz_core::Result<()> {
         let mut vault = Vault::open_bound_with_key(bytes, key)?;
-        vault.set_path(path.to_path_buf());
-        *self = Session::Unlocked(Box::new(Unlocked {
-            vault,
-            last_activity: Instant::now(),
-            started_at: Instant::now(),
-            auto_lock: auto_lock_setting(),
-        }));
-        Ok(())
-    }
-
-    /// 打开库并进入解锁态。
-    pub fn open(&mut self, path: &PathBuf, password: &str) -> xz_core::Result<()> {
-        let pepper =
-            crate::machine::pepper().map_err(|_| xz_core::Error::Corrupt("机器绑定失败"))?;
-        let bytes = std::fs::read(path).map_err(xz_core::Error::Io)?;
-        let mut vault = Vault::open_bound(&bytes, password, &pepper)?;
         vault.set_path(path.to_path_buf());
         *self = Session::Unlocked(Box::new(Unlocked {
             vault,

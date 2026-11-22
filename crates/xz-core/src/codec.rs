@@ -23,7 +23,7 @@
 
 use crate::crypto::{self, KeyPurpose};
 use crate::error::{Error, Result};
-use crate::kdf::{KdfParams, MASTER_KEY_LEN};
+use crate::kdf::KdfParams;
 use crate::{FORMAT_VERSION, MAGIC};
 
 /// 固定头长度（到 index_len 之前）。
@@ -261,10 +261,6 @@ pub fn check_verify_block(
     Ok(())
 }
 
-/// 主密钥长度常量转导出，方便上层使用。
-pub const fn master_key_len() -> usize {
-    MASTER_KEY_LEN
-}
 
 #[cfg(test)]
 mod tests {

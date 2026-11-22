@@ -19,7 +19,6 @@ export interface VaultStats {
   total: number;
   expired: number;
   never_used: number;
-  tags: number;
 }
 
 export interface ItemView {
@@ -91,19 +90,16 @@ export const api = {
     invoke<void>("vault_create", { password, level }),
   open: (path: string, password: string) =>
     invoke<void>("vault_open", { path, password }),
-  close: () => invoke<void>("vault_close"),
   lock: () => invoke<void>("vault_lock"),
   save: (path?: string) => invoke<void>("vault_save", { path: path ?? null }),
   defaultVaultPath: () => invoke<string>("default_vault_path"),
   rekey: (oldPassword: string, newPassword: string, path: string) =>
     invoke<void>("vault_rekey", { oldPassword, newPassword, path }),
-  stats: () => invoke<VaultStats>("vault_stats"),
 
   hot: (limit: number) => invoke<ItemView[]>("list_hot", { limit }),
   all: () => invoke<ItemView[]>("list_all"),
   search: (query: string, limit?: number) =>
     invoke<HitView[]>("search_entries", { query, limit: limit ?? 50 }),
-  tags: () => invoke<[string, number][]>("list_tags"),
 
   get: (id: string) => invoke<EntryView>("entry_get", { id }),
   reveal: (id: string, fieldIndex?: number) =>

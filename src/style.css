@@ -222,12 +222,6 @@ button {
   font-size: 12px;
 }
 
-.link {
-  font-size: 12px;
-  color: var(--dim);
-  transition: color var(--t);
-}
-
 .link:hover {
   color: var(--accent);
 }
@@ -506,17 +500,6 @@ textarea.in {
 
 /* 底部动作：文字按钮 + 中点分隔，不再是裸文本堆在一起 */
 /* 注册页的「不设密码」勾选 */
-.chk-skip {
-  margin-top: 14px;
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  font-size: 12.5px;
-  color: var(--fg-faint);
-  cursor: pointer;
-  user-select: none;
-}
-
 .chk-skip input {
   accent-color: var(--accent);
   width: 14px;
@@ -536,14 +519,6 @@ textarea.in {
   min-height: 22px;
 }
 
-.lock-act {
-  font-size: 13px;
-  color: var(--fg-faint);
-  padding: 3px 6px;
-  border-radius: 6px;
-  transition: color var(--t), background var(--t);
-}
-
 .lock-act:hover {
   color: var(--fg);
   background: var(--hover);
@@ -552,11 +527,6 @@ textarea.in {
 .lock-note {
   font-size: 12px;
   color: var(--fg-faint);
-}
-
-.dot-sep {
-  color: var(--frost-line);
-  font-size: 12px;
 }
 
 .spin {
@@ -1199,36 +1169,7 @@ textarea.in {
   color: var(--mid);
 }
 
-.album-why {
-  display: block;
-  font-size: 10.5px;
-  color: var(--dim);
-  margin-top: 2px;
-  white-space: normal;
-}
-
 /* 手动导出指引：给被 v20 拦下的浏览器用 */
-.import-tip {
-  margin-top: 12px;
-  padding: 11px 13px;
-  border-radius: var(--r);
-  background: var(--surface-hi);
-  border-left: 2px solid var(--accent);
-}
-
-.import-tip-t {
-  font-size: 11.5px;
-  font-weight: 600;
-  color: var(--fg);
-  margin-bottom: 4px;
-}
-
-.import-tip-b {
-  font-size: 11.5px;
-  color: var(--mid);
-  line-height: 1.6;
-}
-
 .album-empty,
 .album-tip {
   padding: 9px 10px;
@@ -1455,10 +1396,6 @@ textarea.in {
 }
 
 .lock-foot,
-.chk-skip {
-  animation: unveil 560ms var(--ease-out) var(--d4) both;
-}
-
 .lock-msg {
   animation: unveil 300ms var(--ease-std) both;
 }

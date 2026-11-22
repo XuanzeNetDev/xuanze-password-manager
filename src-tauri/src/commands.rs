@@ -350,17 +350,6 @@ pub async fn vault_open(
     guard.install(&path, &bytes, key).map_err(err)
 }
 
-/// 关闭库：保存（如果脏）后锁定，两个动作都在 Session::lock 里完成。
-#[tauri::command]
-pub fn vault_close(state: State<'_, AppState>) -> Result<(), String> {
-    let mut guard = state.session.lock().map_err(err)?;
-    // lock() 内部会先落盘再擦除，不必在这里重复一次。
-    // 落盘失败时它仍然锁定，但会把错误返回上来 —— 用户需要知道改动没存住。
-    let result = guard.lock();
-    clipboard::purge_if_ours();
-    result
-}
-
 /// 仅锁定，不保存（用于「立即锁库」快捷键）。
 #[tauri::command]
 pub fn vault_lock(state: State<'_, AppState>) -> Result<(), String> {
@@ -387,8 +376,9 @@ pub fn default_vault_path(app: tauri::AppHandle) -> Result<String, String> {
 
 /// 换密码并落盘。
 ///
-/// `new_password` 允许为空 —— 空密码就是「免密码模式」：
-/// 数据仍然加密（盐会轮换），只是打开时不再需要输入，便利优先。
+/// `new_password` 不能为空，也不能短于 8 位 —— 下面第一件事就是挡这两种。
+/// 早先允许空密码（所谓「免密码模式」），那是把一个加密库变成普通文件，
+/// 而且一次勾选就永久生效，没有二次确认。已经去掉。
 #[tauri::command]
 pub async fn vault_rekey(
     state: State<'_, AppState>,
@@ -473,13 +463,6 @@ pub fn vault_save(state: State<'_, AppState>, path: Option<String>) -> Result<()
     }
 }
 
-/// 概览统计。
-#[tauri::command]
-pub fn vault_stats(state: State<'_, AppState>) -> Result<xz_core::vault::VaultStats, String> {
-    let mut guard = state.session.lock().map_err(err)?;
-    guard.stats(now_ts()).ok_or_else(|| "尚未解锁".to_owned())
-}
-
 // ───────────────────────────── 查询 ─────────────────────────────
 
 /// 热度榜（快捷复制用）。
@@ -535,14 +518,6 @@ pub fn search_entries(
             .to_owned(),
         })
         .collect())
-}
-
-/// 标签列表与计数。
-#[tauri::command]
-pub fn list_tags(state: State<'_, AppState>) -> Result<Vec<(String, usize)>, String> {
-    let mut guard = state.session.lock().map_err(err)?;
-    let u = guard.un().ok_or("尚未解锁")?;
-    Ok(u.vault.index().tag_counts())
 }
 
 /// 条目详情（不含秘密）。

@@ -37,16 +37,13 @@ pub fn run() -> Result<(), String> {
             commands::vault_status,
             commands::vault_create,
             commands::vault_open,
-            commands::vault_close,
             commands::vault_lock,
             commands::vault_save,
             commands::vault_rekey,
             commands::default_vault_path,
-            commands::vault_stats,
             commands::list_hot,
             commands::list_all,
             commands::search_entries,
-            commands::list_tags,
             commands::entry_get,
             commands::entry_reveal,
             commands::entry_save,
@@ -126,6 +123,21 @@ pub fn run() -> Result<(), String> {
                 }
             }
             Ok(())
+        })
+        // 关窗口时把改动落盘。
+        //
+        // 没有这段的话，用户改完条目直接点 × 关闭，那些改动随进程一起消失 ——
+        // 而界面上没有任何提示说「还没保存」。早先有一个 vault_close 命令，
+        // 但从来没人调用它，等于这个兜底一直是空的。
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { .. } = event {
+                use tauri::Manager as _;
+                let state = window.state::<AppState>();
+                if let Ok(mut guard) = state.session.lock() {
+                    let _ = guard.lock();
+                }
+                clipboard::purge_if_ours();
+            }
         })
         .run(tauri::generate_context!())
         .map_err(|e| format!("Tauri 启动失败：{e}"))

@@ -23,8 +23,8 @@ interface MockEntry {
   username: string;
   secret: string;
   url: string;
-  notes: string;
   tags: string[];
+  notes: string;
   fields: { name: string; value: string; secret: boolean }[];
   created_at: number;
   updated_at: number;
@@ -67,12 +67,10 @@ export const mockApi = {
   }),
   create: async () => {},
   open: async () => {},
-  close: async () => {},
   lock: async () => {},
   save: async () => {},
   defaultVaultPath: async () => "C:\\Users\\demo\\AppData\\Roaming\\cn.wordpeak.xuanze.vault\\vault.xzvlt",
   rekey: async () => {},
-  stats: async () => ({ total: store.length, expired: 1, never_used: 0, tags: 6 }),
 
   hot: async (limit: number) => {
     await wait(4);
@@ -93,7 +91,6 @@ export const mockApi = {
       .slice(0, limit)
       .map(toItem);
   },
-  tags: async () => [],
 
   get: async (id: string) => {
     await wait(6);

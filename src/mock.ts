@@ -60,7 +60,7 @@ export const mockApi = {
   uiReady: async () => {},
   status: async () => ({
     unlocked: true,
-    path: "C:\\Users\\demo\\AppData\\Roaming\\cn.wordpeak.xuanze.vault\\vault.xzvlt",
+    path: "C:\\Users\\demo\\AppData\\Roaming\\cn.xuanze.vault\\vault.xzvlt",
     dirty: false,
     count: store.length,
     seconds_until_lock: 300,
@@ -69,7 +69,7 @@ export const mockApi = {
   open: async () => {},
   lock: async () => {},
   save: async () => {},
-  defaultVaultPath: async () => "C:\\Users\\demo\\AppData\\Roaming\\cn.wordpeak.xuanze.vault\\vault.xzvlt",
+  defaultVaultPath: async () => "C:\\Users\\demo\\AppData\\Roaming\\cn.xuanze.vault\\vault.xzvlt",
   rekey: async () => {},
 
   hot: async (limit: number) => {

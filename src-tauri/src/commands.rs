@@ -308,46 +308,83 @@ pub async fn vault_open(
         return Err("这不是本机创建的密钥库".to_owned());
     }
 
-    // 快路径：有有效票据就跳过 Argon2。
+    // 快路径：免密码模式已开启 → 直接用本机封存的主密钥。
     //
-    // 票据里是 DPAPI 封存的主密钥，绑定当前 Windows 账户 ——
-    // 身份已经验证过，再算一遍 KDF 只是让用户盯着转圈。
-    // 票据缺失/过期/换机器时自动退回下面的完整 KDF。
-    if let Some(raw) = crate::machine::load_ticket(&id) {
-        if raw.len() == 32 {
-            let mut key = xz_core::secure::SecretBytes::zeroed(32);
-            key.as_mut_slice().copy_from_slice(&raw);
-            // 拿票据里的密钥试一次校验块：密码改过就自然失效，退回完整流程
-            if let Ok(()) = xz_core::codec::check_verify_block(
-                &key,
-                &header.to_bytes(),
-                xz_core::codec::split_sealed(&bytes).map_err(err)?.verify,
-            ) {
-                let mut guard = state.session.lock().map_err(err)?;
-                return guard.install(&path, &bytes, key).map_err(err);
+    // 「免密码」不是把主密码改成空，而是把主密钥用 DPAPI 封存到本机。
+    // 文件本身仍然用完整主密码 + 机器绑定加密，拷到别处一样打不开；
+    // 只有这台机器、这个 Windows 账户能解开这份封存。
+    if crate::machine::auto_unlock_enabled() {
+        if let Some(raw) = crate::machine::load_auto_unlock(&id) {
+            if raw.len() == 32 {
+                let mut key = xz_core::secure::SecretBytes::zeroed(32);
+                key.as_mut_slice().copy_from_slice(&raw);
+                // 拿它试一次校验块：密码改过、库换过就自然失效，退回要密码
+                if let Ok(()) = xz_core::codec::check_verify_block(
+                    &key,
+                    &header.to_bytes(),
+                    xz_core::codec::split_sealed(&bytes).map_err(err)?.verify,
+                ) {
+                    let mut guard = state.session.lock().map_err(err)?;
+                    return guard.install(&path, &bytes, key).map_err(err);
+                }
             }
         }
     }
 
-    // 慢路径：走完整 KDF（票据没有 / 已过期 / 换过密码）
+    // 慢路径：走完整 KDF
     //
     // 这一段是秒级的，必须丢到阻塞线程池。`async fn` 本身不够 ——
     // 里面照样同步跑，就等于还是占着主线程。
     let bytes_for_kdf = bytes.clone();
-    let id_for_ticket = id.clone();
     let key = tauri::async_runtime::spawn_blocking(move || -> Result<_, String> {
         let pepper = crate::machine::pepper()?;
-        let key = xz_core::vault::Vault::derive_key_for(&bytes_for_kdf, &password, &pepper)
-            .map_err(err)?;
-        // 验过了就发一张新票据，下次进来就是秒开
-        let _ = crate::machine::save_ticket(&id_for_ticket, key.as_slice());
-        Ok(key)
+        xz_core::vault::Vault::derive_key_for(&bytes_for_kdf, &password, &pepper).map_err(err)
     })
     .await
     .map_err(|e| format!("解锁任务失败：{e}"))??;
 
     let mut guard = state.session.lock().map_err(err)?;
     guard.install(&path, &bytes, key).map_err(err)
+}
+
+/// 查询免密码模式是否已开启。
+#[tauri::command]
+pub fn auto_unlock_status() -> bool {
+    crate::machine::auto_unlock_enabled()
+}
+
+/// 开启免密码模式。必须给主密码 —— 要验证是本人。
+#[tauri::command]
+pub fn enable_auto_unlock(state: State<'_, AppState>, password: String) -> Result<(), String> {
+    if password.is_empty() {
+        return Err("请输入主密码".to_owned());
+    }
+    let mut guard = state.session.lock().map_err(err)?;
+    let u = guard.un().ok_or("尚未解锁")?;
+    u.last_activity = std::time::Instant::now();
+    u.vault
+        .verify_password(&password)
+        .map_err(|_| "主密码不对".to_owned())?;
+
+    let id = u.vault.vault_id();
+    let key = u.vault.master_key_slice();
+    crate::machine::enable_auto_unlock(&id, key)
+}
+
+/// 关闭免密码模式。同样要主密码 —— 不能因为库开着就谁都能关掉别人的保护。
+#[tauri::command]
+pub fn disable_auto_unlock(state: State<'_, AppState>, password: String) -> Result<(), String> {
+    if password.is_empty() {
+        return Err("请输入主密码".to_owned());
+    }
+    let mut guard = state.session.lock().map_err(err)?;
+    let u = guard.un().ok_or("尚未解锁")?;
+    u.last_activity = std::time::Instant::now();
+    u.vault
+        .verify_password(&password)
+        .map_err(|_| "主密码不对".to_owned())?;
+    crate::machine::disable_auto_unlock();
+    Ok(())
 }
 
 /// 仅锁定，不保存（用于「立即锁库」快捷键）。
@@ -444,9 +481,12 @@ pub async fn vault_rekey(
         u.vault.set_path(PathBuf::from(path));
     }
 
-    // 密码变了，旧票据必须作废。只清不发 —— 票据里存的是主密钥，
-    // 旧密钥在这里已经不成立，发一张空的只会让人误读成「刚发了新票据」。
-    crate::machine::clear_ticket();
+    // 密码变了，之前封存的主密钥必须作废。
+    //
+    // 免密码模式存的是「旧密码派生出来的那把钥匙」。改完密码它就对不上了，
+    // 留着只会让人下次启动时莫名其妙地退回要密码 —— 而且那个状态看起来
+    // 像「免密码坏了」。直接删掉，用户重新开启一次即可。
+    crate::machine::disable_auto_unlock();
     Ok(())
 }
 
@@ -772,9 +812,13 @@ pub async fn export_xlsx(
         let mut guard = state.session.lock().map_err(err)?;
         let u = guard.un().ok_or("尚未解锁")?;
         u.last_activity = std::time::Instant::now();
-        u.vault
-            .verify_password(&password)
-            .map_err(|_| "主密码不对".to_owned())?;
+        // 免密码模式下不再问密码：这个模式的语义就是「这台机器视为已授权」。
+        // 关掉它（要输一次密码）才会恢复这里的校验。
+        if !crate::machine::auto_unlock_enabled() {
+            u.vault
+                .verify_password(&password)
+                .map_err(|_| "主密码不对".to_owned())?;
+        }
 
         let mut all: Vec<xz_core::entry::Entry> = Vec::new();
         for item in u.vault.index().all_sorted() {
@@ -853,9 +897,12 @@ pub async fn import_xlsx(
     let mut guard = state.session.lock().map_err(err)?;
     let u = guard.un().ok_or("尚未解锁")?;
     u.last_activity = std::time::Instant::now();
-    u.vault
-        .verify_password(&password)
-        .map_err(|_| "主密码不对".to_owned())?;
+    // 与导出一致：免密码模式下不再问密码。
+    if !crate::machine::auto_unlock_enabled() {
+        u.vault
+            .verify_password(&password)
+            .map_err(|_| "主密码不对".to_owned())?;
+    }
 
     let now = now_ts();
     let mut imported = 0usize;

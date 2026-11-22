@@ -112,6 +112,14 @@ export const api = {
     invoke<void>("copy_to_clipboard", { text, sensitive }),
   copyByHeat: (index: number) => invoke<string>("copy_secret_by_heat", { index }),
   /** 导出为 xlsx。需要再输一次主密码 —— 导出的是明文。 */
+  /** 免密码模式是否已开启。 */
+  autoUnlockStatus: () => invoke<boolean>("auto_unlock_status"),
+  /** 开启免密码模式（需主密码）。 */
+  enableAutoUnlock: (password: string) =>
+    invoke<void>("enable_auto_unlock", { password }),
+  /** 关闭免密码模式（需主密码）。 */
+  disableAutoUnlock: (password: string) =>
+    invoke<void>("disable_auto_unlock", { password }),
   exportXlsx: (path: string, password: string) =>
     invoke<number>("export_xlsx", { path, password }),
   /** 从 xlsx 导入。返回 { imported, skipped }。 */

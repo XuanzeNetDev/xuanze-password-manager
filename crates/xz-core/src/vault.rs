@@ -198,6 +198,14 @@ impl Vault {
 
     /// 库的稳定标识（十六进制）。应用侧靠它判断「是不是自己创建的那个库」。
     #[must_use]
+    /// 取出主密钥的切片，供「本机自动解锁」封存用。
+    ///
+    /// 调用方只应该把它立刻交给 `CryptProtectData` 封存，
+    /// 不要持有、不要打印、不要复制到别的地方。
+    pub fn master_key_slice(&self) -> &[u8] {
+        self.master_key.as_slice()
+    }
+
     pub fn vault_id(&self) -> String {
         let mut s = String::with_capacity(32);
         for b in self.vault_id {

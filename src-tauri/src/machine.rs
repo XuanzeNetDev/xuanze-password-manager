@@ -62,71 +62,63 @@ fn registry_path() -> Option<PathBuf> {
     Some(base.join("cn.xuanze.vault").join("registry"))
 }
 
-/// 解锁票据：把主密钥用 DPAPI 封存，下次进入直接取用，跳过 Argon2。
-///
-/// 这是「软件内重新进入」和「从磁盘开陌生库」的区别：
-/// 后者必须老实跑 KDF（那是抗爆破的门槛），前者身份已经验证过了，
-/// 再算一遍 KDF 只是让用户白白盯着转圈。
-///
-/// 安全性由 DPAPI 保证：票据绑定当前 Windows 账户，
-/// 拷到别的账户/机器解不开；换机器也就等于没有票据，退回完整 KDF。
-fn ticket_path() -> Option<PathBuf> {
+/// 免密码模式的开关文件。存在即表示已开启。
+fn auto_unlock_path() -> Option<PathBuf> {
     let base = roaming_appdata()?;
-    Some(base.join("cn.xuanze.vault").join("unlock.ticket"))
+    Some(base.join("cn.xuanze.vault").join("auto_unlock"))
 }
 
-/// 票据有效期。到期后必须重新输密码走完整 KDF。
-const TICKET_TTL_SECS: u64 = 12 * 3600;
-
-fn now_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
+/// 免密码模式是否已开启。
+#[must_use]
+pub fn auto_unlock_enabled() -> bool {
+    auto_unlock_path().is_some_and(|p| p.is_file())
 }
 
-/// 保存解锁票据。
-pub fn save_ticket(vault_id: &str, key: &[u8]) -> Result<(), String> {
-    let Some(path) = ticket_path() else {
+/// 开启免密码模式：把主密钥用 DPAPI 封存到本机。
+///
+/// 和「把主密码改成空」有本质区别：
+///
+/// - 库文件本身没变，仍然用**完整主密码** + 机器绑定加密
+/// - 封存的主密钥只有当前 Windows 账户能解开（DPAPI 用户级）
+/// - 拷到别的机器或别的账户，这层就没了，退回必须输主密码
+///
+/// 所以：文件离开这台机器，保护一点没少；只是在本机上少了一道每次询问。
+pub fn enable_auto_unlock(vault_id: &str, key: &[u8]) -> Result<(), String> {
+    let Some(path) = auto_unlock_path() else {
         return Err("拿不到应用数据目录".to_owned());
     };
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| format!("建不了目录：{e}"))?;
     }
-    let payload = format!(
-        "{vault_id}\n{}\n{}",
-        now_secs() + TICKET_TTL_SECS,
-        to_hex(key)
-    );
+    // 格式：vault_id 换行 主密钥十六进制
+    let payload = [vault_id, "\n", &to_hex(key)].concat();
     let sealed = dpapi_protect(payload.as_bytes())?;
-    std::fs::write(&path, sealed).map_err(|e| format!("写不了票据：{e}"))?;
+    std::fs::write(&path, sealed).map_err(|e| format!("写不了免密码标记：{e}"))?;
+    restrict_acl(&path);
     Ok(())
 }
 
-/// 取出可用的解锁票据。没有、过期、或库不匹配都返回 `None`。
-pub fn load_ticket(vault_id: &str) -> Option<Vec<u8>> {
-    let path = ticket_path()?;
+/// 关闭免密码模式：删掉封存的主密钥。
+pub fn disable_auto_unlock() {
+    if let Some(path) = auto_unlock_path() {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+/// 取出封存的主密钥。未开启、库不匹配、或解不开都返回 `None`。
+pub fn load_auto_unlock(vault_id: &str) -> Option<Vec<u8>> {
+    let path = auto_unlock_path()?;
     let sealed = std::fs::read(path).ok()?;
     let plain = dpapi_unprotect(&sealed).ok()?;
     let text = String::from_utf8(plain).ok()?;
 
     let mut lines = text.lines();
     let tid = lines.next()?;
-    let exp: u64 = lines.next()?.parse().ok()?;
     let hex = lines.next()?;
-
-    // 库必须对得上，过期就作废
-    if tid != vault_id || now_secs() >= exp {
+    if tid != vault_id {
         return None;
     }
     from_hex(hex)
-}
-
-/// 删除票据（锁定/退出时调用）。
-pub fn clear_ticket() {
-    if let Some(path) = ticket_path() {
-        let _ = std::fs::remove_file(path);
-    }
 }
 
 fn to_hex(b: &[u8]) -> String {

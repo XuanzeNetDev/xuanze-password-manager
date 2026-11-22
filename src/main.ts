@@ -465,7 +465,7 @@ function renderSide(): HTMLElement {
       // 不提供导入/导出：
       //   导入 —— 新版浏览器的密码库（v20）拿不到；
       //   导出 —— 明文落盘等于把加密白做了，数据只能留在软件里。
-      mk("gear", "设置", () => openSettings()),
+      mk("gear", "设置", () => void openSettings()),
       h("div", { class: "grow" }),
       h("span", { class: "cd" }, countdown(state.seconds)),
     ),
@@ -1114,7 +1114,38 @@ function openRekey(): void {
   );
 }
 
-function openSettings(): void {
+/**
+ * 启动时尝试免密码进入。
+ *
+ * 只有「免密码模式已开启」且「本机封存的主密钥还能解开这个库」时才成功。
+ * 任何一步不成立就返回 false，交给调用方显示锁屏 —— 不要在这里报错，
+ * 用户根本没主动做什么，弹一条错误只会莫名其妙。
+ */
+async function tryAutoUnlock(): Promise<boolean> {
+  if (!("__TAURI_INTERNALS__" in window)) return false;
+  const path = lastPath();
+  if (!path) return false;
+  try {
+    if (!(await api.autoUnlockStatus())) return false;
+    // 密码传空串：后端看到免密码模式开启会优先用封存的密钥，
+    // 只有那一步失败（比如换过密码）才需要真密码。
+    await api.open(path, "");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+
+async function openSettings(): Promise<void> {
+  // 免密码模式的状态存在后端（文件存不存在），设置页打开时问一次。
+  let autoUnlockOn = false;
+  try {
+    autoUnlockOn = await api.autoUnlockStatus();
+  } catch {
+    autoUnlockOn = false;
+  }
+
   const seg = (opts: [string, string][], cur: string, on: (v: string) => void) => {
     const box = h("div", { class: "seg" });
     for (const [v, label] of opts) {
@@ -1154,14 +1185,35 @@ function openSettings(): void {
         rekeyBtn,
       ),
       setRow(
+        "免密码模式",
+        autoUnlockOn
+          ? "已开启：启动、关闭都不再要求输入密码。库文件本身仍绑着主密码和本机，拷到别处打不开。"
+          : "开启后，本机启动和关闭都不再要求输入密码。文件仍绑着主密码和本机，拷到别处打不开。",
+        (() => {
+          const b = h(
+            "button",
+            { class: "btn", type: "button" },
+            autoUnlockOn ? "关闭" : "开启",
+          );
+          b.addEventListener("click", () => {
+            closeModal();
+            openAutoUnlock(!autoUnlockOn);
+          });
+          return b;
+        })(),
+      ),
+
+      setRow(
         "导入 / 导出",
-        "Excel 表格，按专辑分表。导出的是明文，两边都需要再输一次主密码。",
+        autoUnlockOn
+          ? "Excel 表格，按专辑分表。导出的是明文，请妥善保管文件。"
+          : "Excel 表格，按专辑分表。导出的是明文，两边都需要再输一次主密码。",
         h("div", { class: "row2" },
           (() => {
             const b = h("button", { class: "btn", type: "button" }, "导入");
             b.addEventListener("click", () => {
               closeModal();
-              openImport();
+              void openImport();
             });
             return b;
           })(),
@@ -1169,7 +1221,7 @@ function openSettings(): void {
             const b = h("button", { class: "btn", type: "button" }, "导出");
             b.addEventListener("click", () => {
               closeModal();
-              openExport();
+              void openExport();
             });
             return b;
           })(),
@@ -1211,9 +1263,10 @@ function openSettings(): void {
  * 每张工作表对应一个专辑。表头对不上就跳过整张表 —— 不去猜列序，
  * 猜错会把密码塞进用户名。
  *
- * 同样要求再输一次主密码：导入会改动库内容。
+ * 未开启免密码模式时要求再输一次主密码；开启后不再询问。
  */
-function openImport(): void {
+async function openImport(): Promise<void> {
+  const noPw = await api.autoUnlockStatus().catch(() => false);
   const pw = h("input", {
     class: "in",
     type: "password",
@@ -1229,7 +1282,7 @@ function openImport(): void {
   go.addEventListener("click", async () => {
     if (busy) return;
     msg.textContent = "";
-    if (!pw.value) {
+    if (!noPw && !pw.value) {
       msg.textContent = "请输入主密码";
       pw.focus();
       return;
@@ -1275,24 +1328,109 @@ function openImport(): void {
     if (e.key === "Enter") void go.click();
   });
 
-  openModal(
-    "导入 Excel",
-    [
-      h(
-        "div",
-        { class: "shint" },
-        "文件格式必须与本软件导出的表格一致：表头固定，每张工作表对应一个专辑。",
-      ),
-      pw,
-      msg,
-      h(
-        "div",
-        { class: "shint" },
-        "名称和账号都相同的条目会被跳过，同一个文件可以重复导入。",
-      ),
-    ],
-    [cancel, go],
+  const rows = [
+    h(
+      "div",
+      { class: "shint" },
+      "文件格式必须与本软件导出的表格一致：表头固定，每张工作表对应一个专辑。",
+    ),
+  ];
+  if (noPw) {
+    rows.push(
+      h("div", { class: "shint" }, "免密码模式已开启，本次不再要求输入密码。"),
+    );
+  } else {
+    rows.push(pw);
+  }
+  rows.push(
+    msg,
+    h(
+      "div",
+      { class: "shint" },
+      "名称和账号都相同的条目会被跳过，同一个文件可以重复导入。",
+    ),
   );
+
+  openModal("导入 Excel", rows, [cancel, go]);
+  if (noPw) go.focus();
+  else pw.focus();
+}
+
+
+/**
+ * 开启 / 关闭免密码模式。
+ *
+ * 两种操作都要主密码 —— 开启是「授权这台机器此后免密」，
+ * 关闭是「撤销这个授权」，都不该在库单纯开着的时候随便生效。
+ */
+function openAutoUnlock(enable: boolean): void {
+  const pw = h("input", {
+    class: "in",
+    type: "password",
+    attrs: { placeholder: "主密码", autocomplete: "off" },
+  }) as HTMLInputElement;
+  const msg = h("div", { class: "err" });
+
+  let busy = false;
+  const cancel = h("button", { class: "btn", type: "button" }, "取消");
+  cancel.addEventListener("click", () => closeModal());
+  const go = h(
+    "button",
+    { class: "btn primary", type: "button" },
+    enable ? "开启" : "关闭",
+  );
+
+  const run = async () => {
+    if (busy) return;
+    msg.textContent = "";
+    if (!pw.value) {
+      msg.textContent = "请输入主密码";
+      pw.focus();
+      return;
+    }
+    busy = true;
+    go.disabled = true;
+    try {
+      if (enable) await api.enableAutoUnlock(pw.value);
+      else await api.disableAutoUnlock(pw.value);
+      closeModal();
+      toast(
+        enable ? "免密码模式已开启" : "免密码模式已关闭",
+        enable ? "下次启动不再询问密码" : "下次启动需要重新输入密码",
+      );
+    } catch (e) {
+      msg.textContent = errText(e);
+      busy = false;
+      go.disabled = false;
+    }
+  };
+
+  go.addEventListener("click", () => void run());
+  pw.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") void run();
+  });
+
+  const rows = [
+    h(
+      "div",
+      { class: "shint" },
+      enable
+        ? "开启后，在这台电脑上启动和关闭都不再要求输入密码。"
+        : "关闭后，每次启动都需要重新输入主密码。",
+    ),
+  ];
+  if (enable) {
+    rows.push(
+      h(
+        "div",
+        { class: "shint" },
+        "库文件本身仍用完整主密码加本机绑定加密：拷到别的电脑、发给别人，一样打不开。",
+      ),
+    );
+  }
+  rows.push(pw, msg);
+
+  openModal(enable ? "开启免密码模式" : "关闭免密码模式", rows, [cancel, go]);
   pw.focus();
 }
 
@@ -1307,7 +1445,9 @@ function openImport(): void {
  * 流程：输密码 → 选位置（系统另存为）→ 写盘。
  * 三张表起步：「全部」+ 每个专辑一张。
  */
-function openExport(): void {
+async function openExport(): Promise<void> {
+  // 免密码模式下不再问密码：这个模式的语义就是「本机已授权」。
+  const noPw = await api.autoUnlockStatus().catch(() => false);
   const pw = h("input", {
     class: "in",
     type: "password",
@@ -1323,7 +1463,7 @@ function openExport(): void {
   go.addEventListener("click", async () => {
     if (busy) return;
     msg.textContent = "";
-    if (!pw.value) {
+    if (!noPw && !pw.value) {
       msg.textContent = "请输入主密码";
       pw.focus();
       return;
@@ -1363,25 +1503,32 @@ function openExport(): void {
     });
   }
 
-  openModal(
-    "导出 Excel",
-    [
-      h(
-        "div",
-        { class: "shint" },
-        "导出的文件是明文，任何拿到它的人都能看到全部账号密码。",
-      ),
-      pw,
-      msg,
-      h(
-        "div",
-        { class: "shint" },
-        "按专辑分表：每个专辑一张工作表，另有一张包含全部条目。",
-      ),
-    ],
-    [cancel, go],
+  const rows = [
+    h(
+      "div",
+      { class: "shint" },
+      "导出的文件是明文，任何拿到它的人都能看到全部账号密码。",
+    ),
+  ];
+  if (noPw) {
+    rows.push(
+      h("div", { class: "shint" }, "免密码模式已开启，本次不再要求输入密码。"),
+    );
+  } else {
+    rows.push(pw);
+  }
+  rows.push(
+    msg,
+    h(
+      "div",
+      { class: "shint" },
+      "按专辑分表：每个专辑一张工作表，另有一张包含全部条目。",
+    ),
   );
-  pw.focus();
+
+  openModal("导出 Excel", rows, [cancel, go]);
+  if (noPw) go.focus();
+  else pw.focus();
 }
 
 /** 关于我们：产品信息 + 开源声明。 */
@@ -1609,8 +1756,13 @@ async function boot(): Promise<void> {
       await enter();
     } else {
       const st = await api.status();
-      if (st.unlocked) await enter();
-      else renderLock();
+      if (st.unlocked) {
+        await enter();
+      } else if (await tryAutoUnlock()) {
+        await enter();
+      } else {
+        renderLock();
+      }
     }
   } catch {
     renderLock();

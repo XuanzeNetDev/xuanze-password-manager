@@ -148,6 +148,9 @@ export const mockApi = {
 
   exportXlsx: async () => store.length,
   importXlsx: async () => ({ imported: 0, skipped: 0 }),
+  autoUnlockStatus: async () => false,
+  enableAutoUnlock: async () => {},
+  disableAutoUnlock: async () => {},
 
   touch: async () => {},
   autolockCheck: async () => false,

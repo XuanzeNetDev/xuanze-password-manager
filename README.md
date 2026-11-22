@@ -19,6 +19,56 @@ passwords in one encrypted file.
 
 ---
 
+## 界面
+
+### 一屏看全，字段就地编辑
+
+左边是专辑（按 `#标签` 自动聚类），右边是一张表。数据本身就是表格状的，
+所以直接摊开看 —— 没有「列表 → 详情 → 编辑」那三步。
+
+![主界面](docs/screenshots/02-main.png)
+
+### 密码默认隐藏，点一下就地显示
+
+眼睛按钮只替换那一个单元格，整张表不动 —— 看一条密钥不会让十行重排。
+
+![显示密钥](docs/screenshots/03-reveal.png)
+
+### 专辑即标签，自动聚合
+
+给条目打 `#prod`，左边就多一个 `prod` 分组。不需要手动建树状目录。
+
+![专辑筛选](docs/screenshots/04-album.png)
+
+### 搜索是子序列匹配
+
+输 `ol` 能搜到 `OpenAI`。名称、账号、网址、标签、备注全部参与匹配。
+
+![搜索结果](docs/screenshots/07-search.png)
+
+### 新建：自定义字段、专辑、备注
+
+一条记录里可以塞任意多自定义字段（标为敏感字段的同样加密）。
+
+![新建条目](docs/screenshots/09-new-entry.png)
+
+### 设置与主题
+
+![设置](docs/screenshots/05-settings.png)
+
+深色是纯黑，浅色是纯白 —— 表格区不透背景，读数据时不干扰。
+
+![浅色主题](docs/screenshots/06-light.png)
+
+### 锁屏
+
+![锁屏](docs/screenshots/08-lock.png)
+
+### 首次使用
+
+![注册](docs/screenshots/01-register.png)
+
+---
 ## 为什么做这个
 
 日常要记的东西早就不是「网站密码」了：
@@ -43,20 +93,24 @@ passwords in one encrypted file.
 | **安全默认** | Argon2id + AES-256-GCM + HKDF 子密钥隔离，密钥材料全量 zeroize |
 | **格式公开** | 完整二进制格式规范（[docs/FORMAT.md](docs/FORMAT.md)），可自行实现读取器 |
 | **本地** | 不联网、不注册、不上传。vault 就是一个文件，扔 U 盘就能带走 |
-| **多语言** | 简体中文 / English / 日本語，自动跟随系统 |
 
 ---
 
-## 快捷操作（设计目标）
+## 快捷操作
 
 | 操作 | 说明 |
 |---|---|
-| `Ctrl+K` | 全局搜索（模糊匹配：名称 / 用户名 / 网址 / 标签 / 子序列） |
+| `Ctrl+K` | 聚焦搜索框 |
+| `Ctrl+N` | 新建条目 |
+| `Enter` | 复制选中条目的密钥 |
+| `↑` `↓` | 在列表里上下移动选中 |
 | `Ctrl+Shift+1…9` | 直接复制热度榜第 N 条的密钥 |
-| `Ctrl+C` | 复制选中条目（默认复制密钥，`Ctrl+Shift+C` 复制用户名） |
 | `Ctrl+L` | 立即锁库（擦除内存中的密钥与明文） |
-| 自动锁定 | 闲置 N 分钟后自动锁，可在设置里改 |
-| 剪贴板自清 | 复制的密钥 N 秒后自动从剪贴板清除 |
+| `Esc` | 关闭弹窗 |
+
+输入框内不触发以上快捷键。
+
+另外两项自动行为：闲置超时自动锁库；复制的密钥在剪贴板里停留固定时长后自动清除。
 
 ---
 
@@ -70,10 +124,10 @@ passwords in one encrypted file.
 │   └── xz-bench/     性能基准
 ├── src-tauri/        桌面壳（Tauri v2 命令层 + 自动锁定 + 剪贴板）
 ├── src/              前端界面（原生 TS，无框架）
-├── docs/
-│   ├── FORMAT.md       二进制格式规范（规范来源）
-│   └── PERFORMANCE.md  性能报告与优化过程（含被回退的尝试）
-└── locales/          多语言文案
+└── docs/
+    ├── FORMAT.md       二进制格式规范（规范来源）
+    ├── PERFORMANCE.md  性能报告与优化过程（含被回退的尝试）
+    └── screenshots/    界面截图
 ```
 
 ## 构建

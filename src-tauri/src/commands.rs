@@ -228,6 +228,29 @@ fn kdf_from(level: Option<&str>) -> KdfParams {
     }
 }
 
+/// 判定「操作者是本人」。
+///
+/// 免密码模式已开启时，本机封存的主密钥在启动阶段已经解开过一次，
+/// 会话处于解锁态就等同于本人已验证 —— 那个模式省的就是这一步。
+/// 因此在它开启期间，导出备份、导入、改主密码、关闭该模式都不再追问密码。
+///
+/// 其余情况走完整的主密码重新派生校验。**开启**免密码模式本身仍然要求密码：
+/// 那是进入这个状态的入口，此时本机还没有可用的封存材料。
+async fn ensure_authorized(
+    state: &State<'_, AppState>,
+    password: &str,
+    wrong_msg: &str,
+) -> Result<(), String> {
+    if crate::machine::auto_unlock_enabled() {
+        let guard = state.session.lock().map_err(err)?;
+        if guard.is_unlocked() {
+            return Ok(());
+        }
+        return Err("尚未解锁".to_owned());
+    }
+    confirm_master_password(state, password, wrong_msg).await
+}
+
 /// 重新校验主密码：锁外跑 KDF，锁内做一次常量时间比对。
 ///
 /// ## 为什么单独抽出来
@@ -248,20 +271,36 @@ async fn confirm_master_password(
         return Err("请输入主密码".to_owned());
     }
 
-    // 1) 锁内取出公开材料（KDF 参数 + 盐），立刻放锁。
-    //    这两样本来就在文件头明文里，脱离主密钥没有攻击价值。
-    let (params, salt) = {
+    // 1) 锁内取出全部派生材料（KDF 参数 + 盐 + v3 绑定串副本），立刻放锁。
+    //    这些都在文件头或绑定块里，脱离主密钥没有攻击价值。
+    let (params, salt, binding) = {
         let mut guard = state.session.lock().map_err(err)?;
         let u = guard.un().ok_or("尚未解锁")?;
         u.last_activity = std::time::Instant::now();
-        u.vault.kdf_material()
+        let (p, s) = u.vault.kdf_material();
+        (p, s, u.vault.binding_secret_copy())
     };
 
     // 2) 锁外派生。这是全场唯一的慢路径。
+    //
+    //    规则必须跟库走：v3 库用绑定串，v2 老库才去碰 machine.bind。
+    //    这里曾经一律调 `machine::pepper()`，于是 v3 库按 v2 规则派生，
+    //    再拿去和按 v3 规则算出来的主密钥比对 —— 输对密码也报「密码不对」。
     let pw = password.to_owned();
     let candidate = tauri::async_runtime::spawn_blocking(move || -> Result<_, String> {
-        let pepper = crate::machine::pepper()?;
-        xz_core::vault::Vault::derive_key_with(&pw, &pepper, &salt, params).map_err(err)
+        let pepper = if binding.is_some() {
+            Vec::new()
+        } else {
+            crate::machine::pepper()?
+        };
+        xz_core::vault::Vault::derive_key_with(
+            &pw,
+            &pepper,
+            binding.as_ref().map(|b| b.as_slice()),
+            &salt,
+            params,
+        )
+        .map_err(err)
     })
     .await
     .map_err(|e| format!("校验任务失败：{e}"))??;
@@ -573,7 +612,8 @@ pub async fn disable_auto_unlock(
     state: State<'_, AppState>,
     password: String,
 ) -> Result<(), String> {
-    confirm_master_password(&state, &password, "主密码不对").await?;
+    // 关闭发生在免密码模式已开启的状态下，此时不需要再问密码。
+    ensure_authorized(&state, &password, "主密码不对").await?;
     crate::machine::disable_auto_unlock();
     Ok(())
 }
@@ -668,7 +708,8 @@ pub async fn vault_rekey(
     // 而 `MutexGuard` 跨 await 会让整个 future 不再是 Send。
     // 先校验旧密码：防止有人趁会话还开着悄悄换掉密码。
     // 这一步要重跑 KDF，所以走锁外的那条路。
-    confirm_master_password(&state, &old_password, "原密码不对").await?;
+    // 免密码模式下不再追问旧密码；其余情况仍要验证。
+    ensure_authorized(&state, &old_password, "原密码不对").await?;
 
     let snapshot = {
         let mut guard = state.session.lock().map_err(err)?;
@@ -1156,8 +1197,8 @@ pub async fn export_backup(
     if backup_password.is_empty() {
         return Err("备份密码不能为空 —— 它就是这个文件的锁".to_owned());
     }
-    // 先确认是本人
-    confirm_master_password(&state, &password, "主密码不对").await?;
+    // 先确认是本人（免密码模式下已解锁即视为通过）
+    ensure_authorized(&state, &password, "主密码不对").await?;
 
     // 锁内取快照，拿到就放锁 —— 序列化 + 加密要几十毫秒，不该卡住会话。
     let (sheets, total) = {
@@ -1320,9 +1361,8 @@ pub async fn import_backup(
     .await
     .map_err(|e| format!("读取任务失败：{e}"))??;
 
-    // 与导出一致：这一步不因免密码模式豁免。导入是往库里写数据，
-    // 免检的话等于「本机任何程序都能往你的密钥库里塞条目」。
-    confirm_master_password(&state, &password, "主密码不对").await?;
+    // 与导出一致：免密码模式下已解锁即视为通过
+    ensure_authorized(&state, &password, "主密码不对").await?;
 
     let mut guard = state.session.lock().map_err(err)?;
     let u = guard.un().ok_or("尚未解锁")?;

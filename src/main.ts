@@ -31,6 +31,14 @@ const state = {
   unlocked: false,
   /** 当前库文件的路径。由 `boot()` 问后端要，**不存 localStorage**。 */
   vaultPath: "",
+  /**
+   * 免密码模式是否已开启。
+   *
+   * 开启期间后端不再要求主密码（导出/导入/改密码/关闭该模式都放行），
+   * 前端据此隐藏对应的密码输入框；同时闲置自动锁定会因「锁了也会自动开」
+   * 而失去意义，设置里要如实标出来。
+   */
+  autoUnlock: false,
   /** 当前专辑：all / hot / tag:xxx / untagged */
   album: "all",
   /** 全量条目（用于算专辑计数与过滤）。 */
@@ -403,6 +411,9 @@ async function enter(): Promise<void> {
   state.shown.clear();
   state.secret.clear();
   state.full.clear();
+  // 免密码模式的状态进主界面前问一次：导出、导入、改密码几个对话框都要用
+  // 它决定是否显示密码框，不能等到打开设置时才取。
+  state.autoUnlock = await api.autoUnlockStatus().catch(() => false);
   await reload();
   swapScreen(() => renderMain());
 }
@@ -1162,11 +1173,14 @@ async function openEditor(existing: EntryView | null, id?: string): Promise<void
  * 光靠「会话已解锁」不够，那样有人趁你离开座位就能把密码换掉。
  */
 function openRekey(): void {
+  const needOld = !state.autoUnlock;
   const oldPw = h("input", {
     class: "in",
     type: "password",
     attrs: { placeholder: "原密码", autocomplete: "off" },
   }) as HTMLInputElement;
+  // 免密码模式下后端不校验旧密码，这个框收起来
+  if (!needOld) oldPw.style.display = "none";
   const newPw = h("input", {
     class: "in",
     type: "password",
@@ -1187,7 +1201,7 @@ function openRekey(): void {
   go.addEventListener("click", async () => {
     if (busy) return;
     msg.textContent = "";
-    if (!oldPw.value) {
+    if (needOld && !oldPw.value) {
       msg.textContent = "请输入原密码";
       oldPw.focus();
       return;
@@ -1270,6 +1284,7 @@ async function openSettings(): Promise<void> {
   } catch {
     autoUnlockOn = false;
   }
+  state.autoUnlock = autoUnlockOn;
   // 自动锁定时长同理：后端存盘、后端生效，前端只负责显示与设置。
   let autolockMin = 5;
   try {
@@ -1313,7 +1328,9 @@ async function openSettings(): Promise<void> {
       })),
       setRow(
         "闲置自动锁定",
-        "在这段时间里没有任何操作就自动锁库。调短是在共用环境里最有效的一步。",
+        autoUnlockOn
+          ? "免密码模式下已失效：锁定之后本机会自动重新登入，等于没有锁。关闭免密码模式后此项恢复生效。"
+          : "在这段时间里没有任何操作就自动锁库。调短是在共用环境里最有效的一步。",
         seg(
           [["1", "1 分钟"], ["5", "5 分钟"], ["15", "15 分钟"], ["30", "30 分钟"]],
           String(autolockMin),
@@ -1421,11 +1438,13 @@ async function openSettings(): Promise<void> {
  * 都能往你的密钥库里塞条目。
  */
 async function openImport(): Promise<void> {
+  const needPw = !state.autoUnlock;
   const pw = h("input", {
     class: "in",
     type: "password",
     attrs: { placeholder: "主密码", autocomplete: "off" },
   }) as HTMLInputElement;
+  if (!needPw) pw.style.display = "none";
   const bw = h("input", {
     class: "in",
     type: "password",
@@ -1441,7 +1460,7 @@ async function openImport(): Promise<void> {
   go.addEventListener("click", async () => {
     if (busy) return;
     msg.textContent = "";
-    if (!pw.value) {
+    if (needPw && !pw.value) {
       msg.textContent = "请输入主密码";
       pw.focus();
       return;
@@ -1499,6 +1518,11 @@ async function openImport(): Promise<void> {
         { class: "shint" },
         "自定义字段、创建时间、过期时间、使用次数都会一并还原。",
       ),
+      h(
+        "div",
+        { class: "shint" },
+        needPw ? "需要输入主密码（导入会改动库内容）。" : "免密码模式已开启，本次不需要主密码。",
+      ),
       pw,
       bw,
       msg,
@@ -1526,11 +1550,15 @@ async function openImport(): Promise<void> {
  * 从本机上撤掉。这种交换必须由用户看清后主动点，而不是点一下开关就生效。
  */
 function openAutoUnlock(enable: boolean): void {
+  // 开启要密码（此时还没有封存材料）；关闭不要 —— 关闭发生在已开启状态，
+  // 后端按「已解锁即本人」放行。
+  const needPw = enable || !state.autoUnlock;
   const pw = h("input", {
     class: "in",
     type: "password",
     attrs: { placeholder: "主密码", autocomplete: "off" },
   }) as HTMLInputElement;
+  if (!needPw) pw.style.display = "none";
   const msg = h("div", { class: "err" });
 
   let busy = false;
@@ -1567,7 +1595,7 @@ function openAutoUnlock(enable: boolean): void {
       msg.textContent = "请先勾选上面的确认项";
       return;
     }
-    if (!pw.value) {
+    if (needPw && !pw.value) {
       msg.textContent = "请输入主密码";
       pw.focus();
       return;
@@ -1639,11 +1667,14 @@ function openAutoUnlock(enable: boolean): void {
  *   留空是不允许的 —— 那等于没加密。
  */
 async function openExport(): Promise<void> {
+  const needPw = !state.autoUnlock;
   const pw = h("input", {
     class: "in",
     type: "password",
     attrs: { placeholder: "主密码", autocomplete: "off" },
   }) as HTMLInputElement;
+  // 免密码模式下后端已放行，这个框收起来 —— 留着只会让人以为还要输。
+  if (!needPw) pw.style.display = "none";
   const bw = h("input", {
     class: "in",
     type: "password",
@@ -1664,7 +1695,7 @@ async function openExport(): Promise<void> {
   go.addEventListener("click", async () => {
     if (busy) return;
     msg.textContent = "";
-    if (!pw.value) {
+    if (needPw && !pw.value) {
       msg.textContent = "请输入主密码";
       pw.focus();
       return;
@@ -1721,6 +1752,11 @@ async function openExport(): Promise<void> {
         "div",
         { class: "shint" },
         "这也是换机器 / 重装系统时的恢复来源：新机器上建好库，用「导入」把它读回来。",
+      ),
+      h(
+        "div",
+        { class: "shint" },
+        needPw ? "先输主密码证明是本人，再给这个文件单独设一个备份密码。" : "免密码模式已开启，本次不需要主密码，只需设一个备份密码。",
       ),
       pw,
       bw,

@@ -614,24 +614,41 @@ impl Vault {
         (self.kdf, self.salt)
     }
 
+    /// 复制一份 v3 绑定串，供锁外派生使用。
+    ///
+    /// 与 `kdf_material` 同样是为了「锁内取材料、锁外派生」。
+    /// 返回的是 `SecretBytes` 的独立副本，调用方用完即自动擦除。
+    /// v2 老库没有绑定串，返回 `None`。
+    #[must_use]
+    pub fn binding_secret_copy(&self) -> Option<SecretBytes> {
+        self.binding.as_ref().map(|b| b.secret.duplicate())
+    }
+
     /// 与内存里的主密钥做常量时间比对。
     ///
-    /// 配合 `kdf_material` + `derive_key_with` 使用：
+    /// 配合 `kdf_material` + `binding_secret_copy` + `derive_key_with` 使用：
     /// 锁内取材料 → 放锁 → 后台派生 → 锁内比对（微秒级）。
     #[must_use]
     pub fn matches_master_key(&self, candidate: &SecretBytes) -> bool {
         crate::secure::ct_eq(candidate.as_slice(), self.master_key.as_slice())
     }
 
-    /// 按给定参数与盐派生主密钥（不碰 `Vault` 状态）。
+    /// 按给定材料派生主密钥（不碰 `Vault` 状态），给锁外做密码校验用。
     ///
-    /// `pepper` 为空表示不绑定本机。给锁外做密码校验用。
+    /// **`binding_secret` 决定用哪套规则** —— v3 库必须给，v2 库才走
+    /// `pepper`（机器名 + 卷序列号）。这一层判断散在调用方手里出过一次事：
+    /// 校验密码时按 v2 规则派生、和内存里按 v3 规则算出来的主密钥比对，
+    /// 结果是**输对密码也一律报「密码不对」**。
     pub fn derive_key_with(
         password: &str,
         pepper: &[u8],
+        binding_secret: Option<&[u8]>,
         salt: &[u8],
         params: KdfParams,
     ) -> Result<SecretBytes> {
+        if let Some(secret) = binding_secret {
+            return crate::binding::derive_bound_key_v3(password.as_bytes(), secret, salt, params);
+        }
         if pepper.is_empty() {
             kdf::derive_master_key(password.as_bytes(), salt, params)
         } else {

@@ -336,6 +336,9 @@ pub fn ui_ready(window: tauri::Window) -> Result<(), String> {
 /// 查询当前状态。
 #[tauri::command]
 pub fn vault_status(state: State<'_, AppState>) -> Result<VaultStatus, String> {
+    // 免密码模式下不会自动锁定（见 `Session::check_autolock`），
+    // 所以这里不给倒计时 —— 否则界面上会有一个数到 0 却什么都不发生的计时器。
+    let will_lock = !crate::machine::auto_unlock_enabled();
     let mut guard = state.session.lock().map_err(err)?;
     match guard.un() {
         Some(u) => Ok(VaultStatus {
@@ -343,7 +346,11 @@ pub fn vault_status(state: State<'_, AppState>) -> Result<VaultStatus, String> {
             path: u.vault.path().map(|p| p.display().to_string()),
             dirty: u.vault.is_dirty(),
             count: u.vault.len(),
-            seconds_until_lock: guard.seconds_until_lock(),
+            seconds_until_lock: if will_lock {
+                guard.seconds_until_lock()
+            } else {
+                None
+            },
         }),
         None => Ok(VaultStatus {
             unlocked: false,
@@ -1322,7 +1329,9 @@ pub async fn import_backup(
     password: String,
     backup_password: Option<String>,
 ) -> Result<Option<ImportSummary>, String> {
-    if password.is_empty() {
+    // 这个判空只对「要密码」的情况成立。免密码模式下前端本来就不传密码，
+    // 在这里拦一道会让界面上明明写着「本次不需要主密码」却又报「请输入主密码」。
+    if password.is_empty() && !crate::machine::auto_unlock_enabled() {
         return Err("请输入主密码".to_owned());
     }
 

@@ -1329,23 +1329,25 @@ async function openSettings(): Promise<void> {
       setRow(
         "闲置自动锁定",
         autoUnlockOn
-          ? "免密码模式下已失效：锁定之后本机会自动重新登入，等于没有锁。关闭免密码模式后此项恢复生效。"
+          ? "免密码模式下不会自动锁定 —— 锁定之后本机没有密码可输，只会把人挡在密码框前面。关闭免密码模式后此项恢复生效。"
           : "在这段时间里没有任何操作就自动锁库。调短是在共用环境里最有效的一步。",
-        seg(
-          [["1", "1 分钟"], ["5", "5 分钟"], ["15", "15 分钟"], ["30", "30 分钟"]],
-          String(autolockMin),
-          (v) => {
-            void (async () => {
-              try {
-                const applied = await api.setAutolock(Number(v));
-                autolockMin = applied;
-                toast("已更新", `闲置 ${applied} 分钟后自动锁定`);
-              } catch (e) {
-                toast(`设置失败：${errText(e)}`);
-              }
-            })();
-          },
-        ),
+        autoUnlockOn
+          ? h("div", { class: "seg" }, h("button", { class: "on", type: "button" }, "不会锁定"))
+          : seg(
+              [["1", "1 分钟"], ["5", "5 分钟"], ["15", "15 分钟"], ["30", "30 分钟"]],
+              String(autolockMin),
+              (v) => {
+                void (async () => {
+                  try {
+                    const applied = await api.setAutolock(Number(v));
+                    autolockMin = applied;
+                    toast("已更新", `闲置 ${applied} 分钟后自动锁定`);
+                  } catch (e) {
+                    toast(`设置失败：${errText(e)}`);
+                  }
+                })();
+              },
+            ),
       ),
       setRow(
         "主密码",
@@ -1989,6 +1991,17 @@ async function boot(): Promise<void> {
       /* ignore */
     }
   }, 4000);
+
+  // 倒计时本地每秒递减，上面那个 4 秒轮询负责校准。
+  //
+  // 只靠轮询的话，数字是每 4 秒跳一下，看上去像卡住了 —— 用户会以为
+  // 计时器坏了，而不是「还剩 54 秒」。
+  setInterval(() => {
+    if (!state.unlocked || state.seconds === null || state.seconds <= 0) return;
+    state.seconds -= 1;
+    const el = document.querySelector(".cd");
+    if (el) el.textContent = countdown(state.seconds);
+  }, 1000);
 
   try {
     // 浏览器预览：?screen=lock 直接看锁屏，?screen=app 看主界面。

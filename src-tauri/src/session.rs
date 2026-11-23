@@ -180,6 +180,17 @@ impl Session {
     /// （前端定时轮询）原本只收到一个 bool，什么都不用报 —— 于是用户
     /// 以为「改完就存上了」，其实没有。这条错误必须交上去，让界面说清楚。
     pub fn check_autolock(&mut self) -> (bool, Option<String>) {
+        // 免密码模式下不自动锁定。
+        //
+        // 锁定之后本机没有密码可输（用户开这个模式往往就是不想记/不想输），
+        // 界面会停在密码框前面等人 —— 那与「免密码」的承诺正好相反。
+        // 这里连会话绝对上限一起豁免，否则 8 小时后会出现同样的僵局。
+        //
+        // 代价是内存里的主密钥常驻到关窗口。那正是选择这个模式时接受的东西：
+        // 它的定位是「不需要安全性，只要打开就能用」。
+        if crate::machine::auto_unlock_enabled() {
+            return (false, None);
+        }
         let should_lock = match self {
             Session::Unlocked(u) => {
                 // 闲置超时，或者会话已达绝对上限
